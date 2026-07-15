@@ -4,3 +4,9 @@
 # Environment / secrets
 .env
 .env.local
+
+# Dependencies
+node_modules/
+
+# Generated world data
+data/world/
