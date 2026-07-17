@@ -47,5 +47,16 @@ Tasked with finding and defeating a minotaur in the Newbie Zone:
 - When told the Minotaur was in the "Red Room" and directed to make a decision itself, the Agent decide to scout first, the Agent explored but could not find the target "Red Room."
 - The Agent failed to update memory files during this phase, treating memory upkeep as a deferred administrative task rather than interleaving it with real-time exploration. (Not sure if fail to update memory was because the request wasn't made by calling the /mud-player skill directly)
 
+I could see it struggles to maintain and keep up-to-date with the memory files, especially when they grow large. 
+
+I think we should have dynamic task management and goal decomposition in placed.
+
+The Agent made good decision of scouting the target first to determine the requirements needed to defeat it. But this thought process might not be the same for every loop/request. I would call this Focus Mode where I like to stay within the main quest. But we should have options for Agent to play in different Modes
+
 ### Technical Conclusions
 
+Agent skills does work well, but for complex task we will need better state, player and world management. We need to have auditable visibility on token usage, agent's plan, agent progress as well as its journey. We want an agent that acts in an overall (adaptive to the journey) plan rather than wondering, thinking and making up new/next plan as it goes.
+
+We might need to define Player Persona, which describes how the player likes to play, eg: Easy Mode, Difficult, Risk Mode, etc.
+
+We should see a goal decomposition or planning to see how agent will reason the goal.
