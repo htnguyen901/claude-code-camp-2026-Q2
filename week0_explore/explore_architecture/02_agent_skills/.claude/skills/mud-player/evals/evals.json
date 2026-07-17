@@ -1,0 +1,35 @@
+{
+  "skill_name": "mud-player",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Connect to the MUD and tell me where I am. What's around me? What can I do?",
+      "expected_output": "Should show current location (likely The Temple of Midgaard), location description, available exits (n, s, e, w, d), NPCs present, and any items. Should also show character status (HP, Mana, Moves).",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Navigate to the bakery and tell me what's there. Is the baker present? What items can I see?",
+      "expected_output": "Should successfully navigate to the bakery location (north from Main Street), show the bakery description mentioning 'sweet scent of danish and fine bread', show the baker NPC, and describe items on shelves (bread, danish).",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Go to the bakery and see what the baker sells. Try to identify what items are available for purchase.",
+      "expected_output": "Should navigate to bakery, use 'list' command to show available items, and identify purchasable items (e.g., Danish, Bread) with prices if available.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "Explore the city and create a summary of what shops and NPCs you've found. Update the world map.",
+      "expected_output": "Should explore multiple locations (Temple, Main Street, Armory, Reading Room, Market), identify shops and shopkeepers, and provide a summary of locations, NPCs, and goods available.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "Check your character's current status. What's your health, mana, and inventory?",
+      "expected_output": "Should display character status with HP/Max HP, Mana/Max Mana, Move Points, and show empty or current inventory.",
+      "files": []
+    }
+  ]
+}

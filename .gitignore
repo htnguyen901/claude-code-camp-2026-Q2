@@ -5,8 +5,10 @@
 .env
 .env.local
 
-# Dependencies
-node_modules/
-
-# Generated world data
-data/world/
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.runtime/
