@@ -60,3 +60,70 @@ Agent skills does work well, but for complex task we will need better state, pla
 We might need to define Player Persona, which describes how the player likes to play, eg: Easy Mode, Difficult, Risk Mode, etc.
 
 We should see a goal decomposition or planning to see how agent will reason the goal.
+
+## 3a. Filesystem Subagents driven by coding harness
+
+Filesystem Subagent driven by a coding harness
+
+### Technical Observation
+
+I deleted the content in world.md mid-task, the agents had already read full content so it reconstructured the file from its memory. This raises a question what would happen if we have multiple subagents running parrallel tasks and updating the same files.
+
+**Creation of Secondary Character**
+The current tooling only knows how to login as dummy, credentials are hardcoded in scripts. Asked to fix the hard-coded and allow to login as any user with provided credentials
+
+**Multiple players at once**
+Agents asked to split player.md and scripts to manage respective session to each player
+2 Agents are launched and exploring at the same time
+world.md now get re-read bnefore writing to avoid the concurrent-write race
+
+=> Subagents can handle multiple sessions/exploring as different MUD/player
+
+### Technical Conclusions
+Subagents is capable of playing multiple players/session on simple requests but progress visibility is low. Agents are managing each player's progress on separate markdown file but share the same world file for exploration.  
+
+
+## 3b. Filesystem Subagents driven by coding harness
+
+Agent SDK using SDK driver
+
+### Technical Observation
+
+Agent SDK output turns and token cost. 
+Progress visibility is low as I can't tell whether the agents have finished the request.
+
+**Fixed the Agent SDK**
+Agents output thinking and actions AKA visibility increased
+Agents kepts memory files updated after finishing request
+The log are combined into 1 panel of messages I can't tell if the agents were handling 2 players in parallel or sequentially
+
+### Technical Conclusions
+Agent SDK is capable of logging to MUD and 
+
+
+## 3b. Agent SDK to drive the MUD
+
+Agent SDK using SDK driver
+
+### Technical Observation
+
+Tasked with logging as 2 players and tell whether they're hungry:
+- Agent SDK output turns and token cost. 
+- Progress visibility is low as I can't tell whether the agents have finished the request.
+
+**Fixed the Agent SDK**
+- Agents output thinking and actions AKA visibility increased
+- Agents kepts memory files updated after finishing request
+- The log are combined into 1 panel of messages I can't tell if the agents were handling 2 players in parallel or sequentially
+
+Tasked with finding and defeating a minotaur in the Newbie Zone:
+- Asked agent to log in as smarty and find and defeat the minotaur
+- Agent found player hungry/thristy, resolve that.
+- Agent then head to guild to practice before heading to find minotaur -> Thinking & Problem solving on its own
+- Agent start exploring to find the newbie zone. Can't tell if agent is utulizing and updating world file as it's exploring 
+- Agent restarted daemon and reconnected during a mid-fight with a crawler (unknown reason)
+- Agent managed to fight of mobs and went to rest mode to heal
+
+### Technical Conclusions
+Agent SDK performs much better in planning and executing harder request
+But there is no detailed exploration and execution plan. Memory files are only updated after the request is fulfilled, which makes it hard to keep track and for agent to continue if connection is to dropped midway
