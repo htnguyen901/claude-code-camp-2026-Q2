@@ -1,7 +1,12 @@
 tasks:
+  # player:
+  #   provider: anthropic
+  #   model: claude-haiku-4-5
+  #   prompt_override:
+  #     system: true
   player:
-    provider: anthropic
-    model: claude-haiku-4-5
+    provider: openai
+    model: gpt-4o-mini
     prompt_override:
       system: true
 
