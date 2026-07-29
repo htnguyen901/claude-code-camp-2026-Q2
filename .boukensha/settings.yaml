@@ -6,7 +6,7 @@ tasks:
   #     system: true
   player:
     provider: openai
-    model: gpt-4o-mini
+    model: gpt-5.4-mini
     prompt_override:
       system: true
 
