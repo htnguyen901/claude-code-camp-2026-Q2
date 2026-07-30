@@ -1,0 +1,12 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+$LOAD_PATH.unshift File.expand_path("../lib", __dir__)
+require "mud_manager"
+
+unless ARGV.include?("--mcp")
+  warn "usage: mud-manager --mcp"
+  exit 1
+end
+
+MudManager::McpServer.new.run

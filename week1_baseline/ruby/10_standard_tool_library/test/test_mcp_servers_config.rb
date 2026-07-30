@@ -122,7 +122,11 @@ class TestMcpServersConfig < Minitest::Test
     config_from(server_yaml("mud", extra: "    prefix: tbamud")) do |cfg|
       _ctx, registry = new_registry
       summary = Boukensha.send(:register_mcp_servers, registry, cfg)
-      assert_equal({ "mud" => 26 }, summary)
+      # Every MudManager::Primitives method (55, reflected — see
+      # mud_manager/tool_catalog.rb) plus the two session-lifecycle tools
+      # (connect/disconnect) the daemon adds on top so one process can hold
+      # more than one logged-in character.
+      assert_equal({ "mud" => 57 }, summary)
     end
   ensure
     @fake&.stop

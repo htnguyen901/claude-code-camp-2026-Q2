@@ -74,7 +74,10 @@ class TestToolsMcp < Minitest::Test
                   env: fake_mud_env(@fake), prefix: "tbamud"
       )
     end
-    assert_match(/collision on 'tbamud__look'/, err.message)
+    # Every one of the daemon's 57 tools collides when it's registered twice
+    # under the same prefix — which one is reported first just depends on
+    # ToolCatalog's (alphabetical) ordering, not anything worth pinning down.
+    assert_match(/collision on 'tbamud__\w+'/, err.message)
     assert_match(/prefix/, err.message)
   ensure
     second&.close

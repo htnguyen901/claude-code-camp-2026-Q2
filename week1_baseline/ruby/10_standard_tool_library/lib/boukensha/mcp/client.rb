@@ -29,6 +29,7 @@ module Boukensha
       def initialize(command:, args: [], env: {})
         cmd = [command.to_s, *Array(args).map(&:to_s)]
         env = env.each_with_object({}) { |(k, v), h| h[k.to_s] = v.to_s }
+        clear_bundler_env!(env)
         @stdin, @stdout, @stderr, @wait = Open3.popen3(env, *cmd)
         @id = 0
         handshake
@@ -51,6 +52,30 @@ module Boukensha
       end
 
       private
+
+      # A parent boukensha process is very often itself running under
+      # `bundle exec` (see the step's own bin/ wrapper scripts). Open3.popen3's
+      # env hash only adds/overrides variables on top of the inherited
+      # environment — it doesn't clear anything — so the parent's Bundler
+      # state (BUNDLE_GEMFILE, BUNDLE_LOCKFILE, BUNDLER_VERSION, RUBYOPT's
+      # "-rbundler/setup", ...) leaks straight into the spawned server. If
+      # that server is a *different* gem (mud-manager, say) not listed in the
+      # parent's Gemfile, bundler refuses to resolve its executable at all
+      # and the child dies before printing a single byte. A server is an
+      # independent process, not part of whatever bundle happens to be
+      # spawning it — so every BUNDLE_*/BUNDLER_* variable actually present
+      # in this process's own environment gets unset for the child (nil
+      # deletes a var, per Process.spawn), plus RUBYOPT. Which exact names
+      # Bundler uses has changed across versions (this repo hit BUNDLE_GEMFILE
+      # *and* BUNDLE_LOCKFILE/BUNDLER_VERSION/BUNDLER_SETUP at once), so this
+      # clears the namespace rather than a hand-picked list. The caller's own
+      # `env:` still wins for any key it explicitly sets.
+      def clear_bundler_env!(env)
+        ENV.each_key do |key|
+          next if env.key?(key)
+          env[key] = nil if key == "RUBYOPT" || key.start_with?("BUNDLE_", "BUNDLER_")
+        end
+      end
 
       def handshake
         res = request("initialize", {
@@ -84,7 +109,12 @@ module Boukensha
       def read_until(id)
         loop do
           line = @stdout.gets
-          raise Error, "server closed the connection" if line.nil?
+          if line.nil?
+            detail = @stderr.read_nonblock(8192) rescue nil
+            message = "server closed the connection"
+            message += ": #{detail.strip}" if detail && !detail.strip.empty?
+            raise Error, message
+          end
           line = line.strip
           next if line.empty?
           msg = JSON.parse(line)

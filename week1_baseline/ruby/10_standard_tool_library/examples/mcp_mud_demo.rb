@@ -62,7 +62,7 @@ if dry
 
   puts "tbamud__look       => #{registry.dispatch('tbamud__look', {}).inspect}"
   puts "tbamud__attack orc => #{registry.dispatch('tbamud__attack', 'target' => 'orc').inspect}"
-  puts "bad cast           => #{registry.dispatch('tbamud__cast_spell', 'spell' => '').inspect}"
+  puts "bad move           => #{registry.dispatch('tbamud__move', 'direction' => 'sideways').inspect}"
 
   client.close
   fake&.stop
@@ -76,6 +76,6 @@ end
 # because the agent has no concept of a MUD. See examples/example.rb — at this
 # point the two demos are the same program.
 Boukensha.run(
-  task: "Look at your surroundings, check your score, then look at the exits " \
+  task: "Connect to the MUD, Look at your surroundings, check your score, then look at the exits " \
         "and tell me what you see."
 )
