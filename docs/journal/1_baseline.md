@@ -30,6 +30,8 @@ The goal is to build a baseline agent that has all the common components of buil
 - Given a vague objective ("log in and defeat the Big Minotaur"), the agent has no plan and wanders through a wide range of commands, and visibly ignores clear tool-usage errors instead of correcting course.
 - The agent also struggles with interactive MUD UI conventions it was never told about — e.g. it can recognize from context that it needs a light source in a dark room but can't act on that, and gets stuck in a pager it doesn't know how to quit despite the pager's instructions being right there in the text it received.
 
+- The `phase: plan` added in 12_context was a big milestone helping the agents reasoning for every steps to execute the goal
+
 
 ## Technical Conclusions
 
@@ -44,4 +46,7 @@ The goal is to build a baseline agent that has all the common components of buil
 
 
 ## Key Takeaway
-[todo]
+- A hand-built agentic loop (tool registry + prompt builder + logging + REPL) is sufficient for mechanical tool-calling, but it is not sufficient on its own to drive an open-ended objective: without a planning primitive and without error-awareness feeding tool failures back into the next decision, the agent wanders and repeats invalid commands. Planning and error-handling are baseline components, not optional extras — confirmed by the `phase: plan` milestone in 12_context measurably improving reasoning per step.
+- MCP was worth the added complexity for Ruby↔other-language interfacing, but it only moved the transport problem, not the domain problem: every real bug we hit (new-character flow, linkdead reconnects, buffer off-by-one, `look`'s preposition coupling - SHOULD BE FIXED) lived below MCP in `Primitives`/`Session`/`ToolCatalog`, and reflecting `Primitives` into tools kept the daemon's surface from drifting out of sync with the gem for free.
+- Most "the agent/model did something dumb" symptoms we investigated were actually transport/session bugs (stale config, PATH gaps, a Bundler env leak, an unconsumed reconnect buffer causing off-by-one tool results) wearing the same costume ("no active MUD connection", garbled observations). The standing rule going forward: verify what the model actually received before attributing a bad result to reasoning or model choice.
+- Model capability and prompt specificity are entangled, not independent variables — gpt-4o-mini only matched gpt-5.4-mini after an explicit path hint was added. Any future model-comparison baseline must hold prompt scaffolding fixed, or the comparison silently measures prompting instead of the model.

@@ -1,0 +1,1 @@
+{"phase":"session_start","max_iterations":25,"max_turn_tokens":60000,"max_output_tokens":1024,"context_window":400000,"model":"gpt-5.4-mini","provider":"openai","session_id":"20260731T112000Z-f4d1b2fe","at":"2026-07-31T18:20:00+07:00"}
