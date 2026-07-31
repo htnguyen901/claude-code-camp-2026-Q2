@@ -39,3 +39,9 @@ mcp_servers:
       MUD_PORT:     4000
       MUD_NAME:     dummy
       MUD_PASSWORD: helloworld
+
+    filesystem:
+      command:  npx
+      args:     [-y, "@modelcontextprotocol/server-filesystem", /tmp]
+      prefix:   fs
+      required: false          

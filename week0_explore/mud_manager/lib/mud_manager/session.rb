@@ -165,6 +165,39 @@ module MudManager
       drain
     end
 
+    # Send a command and return its response. This is the safe way to do a
+    # one-shot round trip — send_command + read_until_prompt back to back is
+    # NOT equivalent, and will misattribute output under real MUD conditions.
+    #
+    # CircleMUD pushes unsolicited text at any time, independent of anything
+    # the client sends — broadcasts, other players' visible actions, room
+    # spec_procs — each one followed by its own freshly re-displayed prompt.
+    # read_until_prompt has no way to tell "a prompt that terminates MY
+    # command's response" apart from "a prompt that just happens to be
+    # sitting in the buffer because something unrelated arrived earlier
+    # while nobody was reading." If any such text is already buffered when
+    # we call read_until_prompt, its trailing prompt is what gets matched —
+    # this command's real response, generated moments later, becomes the
+    # leftover for whatever the NEXT command call is. That shift never
+    # self-corrects: every later exchange for the rest of the session
+    # inherits the previous one's real output, one message behind.
+    #
+    # Draining right before we send eliminates the leftover that causes
+    # this: anything sitting in the buffer at that instant is guaranteed to
+    # predate — and therefore not belong to — the command we're about to
+    # issue, so it's safe to discard. It doesn't make this airtight (a
+    # message could in principle land in the microseconds between drain and
+    # send), but it collapses what was a permanent, session-long
+    # misattribution into, at worst, a single corrupted response that the
+    # next command's own drain immediately clears — CircleMUD's plain
+    # telnet protocol has no per-request correlation id, so that residual
+    # race is not something a client-side fix can fully close.
+    def command(input, timeout: nil)
+      drain
+      send_command(input)
+      read_until_prompt(timeout: timeout)
+    end
+
     # Walk the CircleMUD login dance:
     def login(username, password)
       self.read_until(/By what name do you wish to be known.*\?/i)
@@ -180,7 +213,15 @@ module MudManager
 
       output = self.read_until(/Welcome|Reconnecting|Wrong password/i)
       if output =~ /Reconnecting/i
-        # already in-world, skip menu
+        # Already in-world (this connection took over a linkdead character).
+        # read_until above only consumed up through the matched word itself
+        # ("Reconnecting"), not the status line + prompt the server sent
+        # right after it (e.g. ".\r\n\r\n21H 100M 77V (news) (motd) > ") —
+        # that's still sitting unread in the buffer. Drain it now, or the
+        # first real gameplay command's read_until_prompt would match THIS
+        # leftover prompt instead of its own, and silently return stale
+        # banner text as if it were that command's response.
+        self.read_until_prompt
       elsif output =~ /Welcome/i
         # fresh login, handle menu
         self.send_command(:return) # enter for main menu

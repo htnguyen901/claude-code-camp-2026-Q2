@@ -172,8 +172,7 @@ module MudManager
       return ["no such session '#{session_id}' — call connect first", true] unless session
 
       command = ToolCatalog.build(spec, args)
-      session.send_command(command)
-      [session.read_until_prompt, false]
+      [session.command(command), false]
     rescue ArgumentError => e
       [format_error(e), true]
     rescue Session::Error => e

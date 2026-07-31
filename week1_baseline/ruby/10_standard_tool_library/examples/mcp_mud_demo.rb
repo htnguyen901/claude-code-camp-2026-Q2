@@ -76,6 +76,5 @@ end
 # because the agent has no concept of a MUD. See examples/example.rb — at this
 # point the two demos are the same program.
 Boukensha.run(
-  task: "Connect to the MUD, Look at your surroundings, check your score, then look at the exits " \
-        "and tell me what you see."
+  task: "Connect to the MUD, log in as player dummy then find and defeat the Big Minotaur in the newbie zone"
 )

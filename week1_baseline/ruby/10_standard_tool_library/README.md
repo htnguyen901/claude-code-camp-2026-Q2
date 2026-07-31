@@ -1,8 +1,13 @@
 # Step 10 — A Standard Tool Library
 
 ## Build
+
+```bash
 gem build boukensha.gemspec
 gem install boukensha-0.10.0.gem
+```
+
+After that, `boukensha` is on your `$PATH` and works from any directory.
 
 The standard tool library is **MCP**.
 
@@ -101,6 +106,40 @@ BOUKENSHA_DIR=.boukensha ruby week1_baseline/ruby/10_standard_tool_library/examp
 BOUKENSHA_PATH=~/Sites/boukensha/10_standard_tool_library boukensha
 ```
 
+## Connecting to a real MUD
+
+`mcp_servers: mud:` only works once `mud-manager` actually resolves as a
+command. Two setup steps that live outside this directory and are easy to
+miss:
+
+1. **Build and install the `mud_manager` gem** so `mud-manager` lands on
+   `PATH` (`command: mud-manager` in `settings.yaml` is a bare command name,
+   resolved by the OS — nothing here hunts for the binary for you):
+   ```sh
+   cd week0_explore/mud_manager
+   gem build mud_manager.gemspec
+   gem install ./mud_manager-0.2.0.gem
+   ```
+2. **`mcp_servers: mud:` in `settings.yaml`**, with real credentials —
+   see the example in the table above. `env:` values are always
+   stringified by `Config#mcp_servers`, so `MUD_PORT: 4000` (an `Integer` in
+   YAML) is fine.
+
+Full details on the daemon itself — its tool surface (every
+`MudManager::Primitives` method reflected automatically), the `connect`/
+`disconnect` tools for driving more than one character from one daemon
+process, the `FakeMud` test fixture, and MUD-protocol quirks found testing
+against a live tbaMUD (new-character creation vs. existing-character login,
+linkdead reconnects) — live in
+[`week0_explore/mud_manager/README.md`](../../../week0_explore/mud_manager/README.md).
+The client side (`Boukensha::Mcp::Client` / `Boukensha::Tools::Mcp`) is
+documented in
+[`docs/plans/mud_manager/generic_mcp_client.md`](../../../docs/plans/mud_manager/generic_mcp_client.md),
+including a real bug this step hit and fixed: a parent process launched via
+`bundle exec` (exactly how this step's own `bin/` wrapper scripts run) leaks
+its own Bundler environment into any spawned MCP server, which can kill a
+different gem's executable before it prints a single byte.
+
 ## Tests
 
 ```sh
@@ -121,9 +160,10 @@ Summary
 ├─────┼────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
 │ 2   │ .boukensha/settings.yaml has stray mud: key, no mcp_servers: block │ Replace mud: with an mcp_servers: mud: {...} block                     │
 ├─────┼────────────────────────────────────────────────────────────────────┼────────────────────────────────────────────────────────────────────────┤
-│ 3   │ mud_manager gem has no bin/mud-manager / --mcp mode / fake_mud yet │ Needs to be implemented before #2's config can actually spawn anything │
+│ 3   │ mud_manager gem has no bin/mud-manager / --mcp mode / fake_mud yet │ RESOLVED — see "Connecting to a real MUD" above and the mud_manager   │
+│     │                                                                    │ README. `bin/mud-manager --mcp` (JSON-RPC/MCP over stdio), tool       │
+│     │                                                                    │ reflection off `Primitives`, and `FakeMud` all now exist.             │
 └─────┴────────────────────────────────────────────────────────────────────┴────────────────────────────────────────────────────────────────────────┘
-> We will not be implementing the fix now as we will implement a proper mcp later
 
 
 ## Technical Considerations
@@ -134,3 +174,4 @@ This is just observations we dont want to fix these right now just to perserve c
 - Non-text MCP content blocks (images, embedded resources) are dropped rather than rendered — they yield an empty string, not an exception. No MUD tool can hit this.
 - The backends advertise every listed parameter as required, which is wrong for third-party servers with genuinely optional params. Fixing it means plumbing `inputSchema["required"]` through `Boukensha::Tool`, which touches all tools.
 - `~/.boukensharc` YAML support (`boukensha_path:` / `boukensha_dir:` keys, plus bare single-line path backward compat) from step 9 was not carried forward into this step's initial rewrite, which silently mis-parsed step-9-era rc files. This step's loader now restores that step-9 behavior verbatim — see [`docs/plans/floating_artifacts/bounkensharc.md`](../../../docs/plans/floating_artifacts/bounkensharc.md) for the incident writeup; keep that doc in mind before rewriting `boukensha_loader.rb` in later steps.
+- `prompts/system.md` tells the model there is no `connect` tool and the MUD session opens implicitly on the first gameplay action. That was true when written; the `mud-manager` daemon now also exposes explicit `connect`/`disconnect` tools for driving more than one character from one process (see the mud_manager README). Worth revisiting the prompt so the model knows `connect` exists for the multi-character case instead of only being told it doesn't.

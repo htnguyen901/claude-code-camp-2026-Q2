@@ -126,5 +126,33 @@ transport worked correctly the whole time):
 - An abrupt disconnect (closing the socket without sending `quit`, which is
   exactly what `Session#close` does) leaves the character linkdead in the
   game rather than logged out. The next login for that name gets
-  `"Reconnecting."` instead of the normal menu — `Session#login` already
-  handles that branch correctly.
+  `"Reconnecting."` instead of the normal menu, and (until fixed)
+  `Session#login`'s `read_until` left the status line/prompt sent right
+  after `"Reconnecting."` unread in the buffer — the same instance of the
+  general problem below, in login's reconnect branch specifically. Fixed
+  there by draining that leftover with `read_until_prompt` before `login`
+  returns on the reconnect path.
+- **General case of the above, not specific to reconnecting**: CircleMUD
+  pushes unsolicited text at any time, independent of anything the client
+  sends — broadcasts, other players' visible actions, room spec_procs —
+  each followed by its own freshly re-displayed prompt. `send_command` +
+  `read_until_prompt` back to back is unsafe: `read_until_prompt` matches
+  the *first* `"> "` in the buffer with no way to tell "the prompt that
+  terminates my command's response" apart from "a prompt already sitting
+  there because something unrelated arrived earlier." If any is buffered
+  when `read_until_prompt` runs, its trailing prompt gets matched instead of
+  the real one, the command's actual response becomes the leftover for the
+  *next* call, and that shift never self-corrects — every later exchange for
+  the rest of the session inherits the previous one's real output, one
+  message behind. Observed live: a delayed login-arrival broadcast
+  (`"A booming voice announces, 'Welcome Dummy to the realm!'"`) caused every
+  subsequent tool call in a session to return the *previous* call's real
+  result. Fixed with `Session#command(input)` — `drain`, then
+  `send_command`, then `read_until_prompt` — used by `McpServer` for every
+  tool dispatch instead of the raw two-step sequence. Draining immediately
+  before sending guarantees anything already buffered predates (and can't
+  belong to) the command about to be issued. Not airtight — CircleMUD's
+  plain telnet has no per-request correlation id, so a message landing in
+  the microseconds between drain and send is still possible — but it turns
+  what was a permanent, session-long misattribution into, at worst, one
+  corrupted response that the next command's own drain immediately clears.
