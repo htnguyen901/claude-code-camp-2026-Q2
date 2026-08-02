@@ -1,4 +1,4 @@
-## Preweek Technical Documentation 
+## Week 1 Technical Documentation 
 
 ## Technical Goal
 The goal is to build a baseline agent that has all the common components of building any kind of agent

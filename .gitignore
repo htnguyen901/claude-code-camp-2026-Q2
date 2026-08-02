@@ -14,4 +14,7 @@ __pycache__/
 .runtime/
 *.gem
 
+
 *.example
+*_note_personal.md
+docs/bugs

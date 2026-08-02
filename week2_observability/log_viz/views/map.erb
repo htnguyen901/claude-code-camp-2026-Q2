@@ -1,0 +1,101 @@
+<a href="/" class="back">&larr; All sessions</a>
+
+<h1>World Map</h1>
+<p class="meta">
+  Accumulated across every session ever logged &mdash; <%= @rooms.length %> room<%= "s" unless @rooms.length == 1 %> discovered,
+  <%= @world_map.edges.length %> known connection<%= "s" unless @world_map.edges.length == 1 %>.
+</p>
+
+<% if @live.any? %>
+  <div class="banner banner-ok">&#9679; <%= @live.length %> agent<%= "s" if @live.length != 1 %> playing right now</div>
+<% end %>
+
+<% if @rooms.empty? %>
+  <p class="empty">No rooms discovered yet &mdash; play a session that calls <code>look</code>/<code>move</code> to populate the map.</p>
+<% else %>
+  <div class="map-scroll">
+    <%= map_svg(@world_map) %>
+  </div>
+<% end %>
+
+<div class="breakdown">
+  <div class="breakdown-title">Agents playing right now</div>
+  <% if @live.empty? %>
+    <p class="empty">No live sessions (no activity in the last 60s).</p>
+  <% else %>
+    <table class="breakdown-table">
+      <thead>
+        <tr>
+          <th>Session</th>
+          <th>Task</th>
+          <th>Model</th>
+          <th>Current room</th>
+          <th class="nowrap">Turn / iter</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% @live.each do |s| %>
+          <tr>
+            <td><a href="/sessions/<%= s[:session_id] %>"><%= s[:session_id] %></a></td>
+            <td><%= s[:task] || "&mdash;" %></td>
+            <td><%= [s[:provider], s[:model]].compact.join(" / ") %></td>
+            <td><%= s[:last_room] || "&mdash;" %></td>
+            <td class="nowrap"><%= s[:turn] %> / <%= s[:iteration] %></td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  <% end %>
+</div>
+
+<div class="breakdown">
+  <div class="breakdown-title">Discoveries &mdash; items/mobs/NPCs noticed in room text</div>
+  <% if @discoveries.empty? %>
+    <p class="empty">Nothing noticed yet.</p>
+  <% else %>
+    <table class="breakdown-table">
+      <thead>
+        <tr>
+          <th>Noticed</th>
+          <th>Room(s)</th>
+          <th class="nowrap">First seen</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% @discoveries.each do |d| %>
+          <tr>
+            <td><%= text_html(d[:content]) %></td>
+            <td><%= d[:rooms].join(", ") %></td>
+            <td class="nowrap"><%= format_time(d[:first_seen_at]) %></td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  <% end %>
+</div>
+
+<div class="breakdown">
+  <div class="breakdown-title">Rooms</div>
+  <table class="breakdown-table">
+    <thead>
+      <tr>
+        <th>Room</th>
+        <th>Exits</th>
+        <th class="nowrap">Visited</th>
+        <th class="nowrap">First seen</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% @rooms.each do |r| %>
+        <tr>
+          <td><%= text_html(r[:title]) %></td>
+          <td><%= r[:exits].join(" ") %></td>
+          <td class="nowrap"><%= r[:visit_count] %>&times;</td>
+          <td class="nowrap"><%= format_time(r[:first_seen][:at]) %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table>
+</div>
+
+<meta http-equiv="refresh" content="15">
