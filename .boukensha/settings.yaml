@@ -41,6 +41,16 @@ tasks:
     # host: http://localhost:11434
     min_chars: 150
 
+# OpenTelemetry traces/metrics (Boukensha::Telemetry, week2_observability/
+# ruby/15_observability). Defaults on — it's inert instrumentation and
+# fail-open (no collector running just means it's dropped), unlike
+# tasks.compactor above which defaults off because Tier 2 is a real behavior
+# change. Set to false for zero SDK overhead instead of "exports nowhere".
+# Everything else (endpoint, service name, exporter choice) is standard OTel
+# env vars — see the step's README — not settings.yaml.
+# observability:
+#   enabled: false
+
 # mud:
 #   host: localhost
 #   port: 4000

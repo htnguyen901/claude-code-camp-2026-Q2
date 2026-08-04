@@ -20,6 +20,7 @@ module LogViz
                        :comp_system_cost, :comp_tools_cost, :comp_messages_cost,
                        :comp_other_cost, :comp_output_cost, :comp_cost_usd,
                        :comp_output_tokens, :room_title, :injected_calls,
+                       :trace_id,
                        keyword_init: true)
 
     # One sample per `response`, in order. Drives the in-transcript chips (§2.3)
@@ -154,6 +155,7 @@ module LogViz
     def parse!
       current_turn      = 0
       current_iteration = 0
+      current_trace_id  = nil # this turn's trace_id, from its "turn" event (Phase 2/3 bridge)
       pending_user      = true
       pending_calls     = []
       running_turn      = 0   # cumulative input+output within the current turn
@@ -172,9 +174,10 @@ module LogViz
           @started_at = event["at"]
           @snapshot   = event           # carries the limits/model denominators
         when "turn"
-          current_turn = event["n"]
-          pending_user = true
-          running_turn = 0
+          current_turn     = event["n"]
+          current_trace_id = event["trace_id"]
+          pending_user     = true
+          running_turn     = 0
         when "iteration"
           current_iteration = event["n"]
         when "request"
@@ -313,7 +316,8 @@ module LogViz
         when "turn_end"
           @entries << Entry.new(type: :turn_end, reason: event["reason"],
                                  iterations: event["iterations"], tokens: event["tokens"],
-                                 turn: current_turn, iteration: current_iteration)
+                                 turn: current_turn, iteration: current_iteration,
+                                 trace_id: current_trace_id)
         end
       end
     end

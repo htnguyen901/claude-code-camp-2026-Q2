@@ -15,6 +15,12 @@ module LogViz
       File.expand_path("../../../../.boukensha/sessions", __dir__)
     }
     set :world_map_db, ENV["LOG_VIZ_WORLD_MAP_DB"]
+    # Base URL for the Jaeger UI a turn's trace_id (see Session#parse!'s
+    # "turn" case, sourced from Boukensha::Logger#turn — docs/plans/
+    # observability/otel_and_logs/00_overview.md "Bridging the two systems")
+    # links out to. A link, not a merged pipeline — log_viz never talks to
+    # Jaeger's API, it just builds a URL.
+    set :jaeger_ui_base, ENV.fetch("LOG_VIZ_JAEGER_UI_BASE") { "http://localhost:16686" }
 
     LIVE_MARKER_COLORS = %w[#e11d48 #2563eb #16a34a #d97706 #7c3aed #0891b2].freeze
 
@@ -53,6 +59,16 @@ module LogViz
 
       def ansi_html(text)
         Ansi.to_html(text)
+      end
+
+      # nil for a turn with no trace_id (pre-Phase-2 logs, or any turn whose
+      # Logger#turn event predates this field) — session.erb only renders
+      # the "View trace" link when this returns non-nil, same
+      # graceful-degradation posture as the `compacted`/injected panel.
+      def jaeger_trace_url(trace_id)
+        return nil if trace_id.to_s.empty?
+
+        "#{settings.jaeger_ui_base}/trace/#{trace_id}"
       end
 
       def text_html(text)

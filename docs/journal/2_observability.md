@@ -106,8 +106,11 @@ then concluded that it could look for other options such as fountain
 - Discoveries in room: Uncertain whether it needs to be included in compacted context or we could utilize
 player's knowledge
 
-### 7. Tracing
-Noticed Agent was taking longer time than before
+### 7. Observability - Tracing, Logs, Monitoring
+Revisit: precise per-phase latency becomes something worth measuring
+and needing to query traces without custom UI
+As task and tools are growing larger, analyzing via UI is not enough to serve
+- 
  
 
 ## 8. Seed players bin & Add safe fallback error when player not created

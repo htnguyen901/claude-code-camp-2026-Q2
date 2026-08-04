@@ -345,6 +345,16 @@ table.sessions a:hover {
   color: #8a2e00;
 }
 
+.trace-link {
+  font-weight: 400;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.trace-link:hover {
+  text-decoration: underline;
+}
+
 /* In-transcript context/turn chip */
 .ctx-chip {
   display: inline-flex;

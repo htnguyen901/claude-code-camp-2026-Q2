@@ -21,6 +21,13 @@ A small Sinatra app that turns `.boukensha/sessions/*.jsonl` logs (written by
     request block — the exact post-compaction text about to enter that
     request's payload, with a char-count delta, so you don't have to expand
     the request's raw JSON to see what actually got sent
+  - a **"View trace ↗"** link on each turn (when the session was logged by
+    `week2_observability/ruby/15_observability` — see its README) — jumps
+    straight to that turn's Jaeger waterfall. `session_id` is the join key
+    between the two systems; this is a link out to the other view, not a
+    merged pipeline (see `docs/plans/observability/otel_and_logs/00_overview.md`).
+    Older sessions, or any turn logged with `observability.enabled: false`,
+    simply render with no link — no error.
 
 It only reads the `.jsonl` files — nothing is written back.
 
@@ -39,6 +46,7 @@ Then open <http://localhost:4567>.
 |---|---|---|
 | `LOG_VIZ_SESSIONS_DIR` | `<repo root>/.boukensha/sessions` | Directory of `.jsonl` session logs to read |
 | `LOG_VIZ_WORLD_MAP_DB` | `<repo root>/.boukensha/world_map.sqlite3` | SQLite file for the accumulated world map (`/map`) — also the file `room_knowledge` (week2_observability/ruby/13_room_inspector) reads read-only |
+| `LOG_VIZ_JAEGER_UI_BASE` | `http://localhost:16686` | Base URL the per-turn "View trace ↗" link is built from (`<base>/trace/<trace_id>`) — point this elsewhere if Jaeger isn't running on the default `week2_observability/otel` port |
 | `OLLAMA_HOST` | `http://localhost:11434`, or `tasks.content_fact.host` below | Local Ollama daemon used by `ContentFact`'s background classification worker. Wins over `tasks.content_fact.host` if both are set. |
 | `PORT` | `4567` | Port to listen on |
 | `BIND` | `localhost` | Address to bind to |

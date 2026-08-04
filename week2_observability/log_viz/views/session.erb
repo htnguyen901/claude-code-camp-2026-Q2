@@ -210,6 +210,7 @@
     <% elsif entry.type == :turn_end %>
       <% tripped = @session.limit_reason?(entry.reason) %>
       <% has_bar = @session.max_turn_tokens.to_i > 0 && entry.tokens %>
+      <% trace_url = jaeger_trace_url(entry.trace_id) %>
       <div class="turn-strip<%= " danger" if tripped %>">
         <div class="turn-strip-text">
           <%= tripped ? "&#9888;" : "&#10003;" %>
@@ -217,6 +218,7 @@
           &middot; <%= entry.iterations %> iteration<%= "s" unless entry.iterations == 1 %>
           <% if entry.tokens %>&middot; <%= fmt_tokens(entry.tokens) %> tok<% end %>
           <% if tripped %>&middot; <%= entry.reason %><% end %>
+          <% if trace_url %>&middot; <a href="<%= trace_url %>" target="_blank" rel="noopener" class="trace-link">View trace &#8599;</a><% end %>
         </div>
         <% if has_bar %>
           <div class="bar"><div class="<%= tripped ? "bar-fill danger" : "bar-fill" %>" style="width: <%= pct(entry.tokens, @session.max_turn_tokens) %>%"></div></div>
