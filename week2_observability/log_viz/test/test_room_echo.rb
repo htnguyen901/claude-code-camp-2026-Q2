@@ -94,4 +94,18 @@ class TestRoomEcho < Minitest::Test
       refute LogViz::RoomEcho.location_tool?(name), "expected #{name} to NOT be location-revealing"
     end
   end
+
+  def test_clean_reply_strips_ansi_blank_lines_and_the_status_prompt
+    raw = "\e[0;32mIt's a rusty iron lever.\e[0m\r\n\r\n21H 100M 83V (news) (motd) > "
+
+    assert_equal "It's a rusty iron lever.", LogViz::RoomEcho.clean_reply(raw)
+  end
+
+  def test_clean_reply_joins_a_multi_line_reply_with_spaces
+    raw = "A grocer stands at the counter,\r\nwith a slightly impatient look on his face.\r\n\r\n" \
+          "22H 100M 84V (news) (motd) > "
+
+    assert_equal "A grocer stands at the counter, with a slightly impatient look on his face.",
+                 LogViz::RoomEcho.clean_reply(raw)
+  end
 end

@@ -2,15 +2,17 @@
 
 <h1>World Map</h1>
 <p class="meta">
-  Accumulated across every session ever logged &mdash; <%= @rooms.length %> room<%= "s" unless @rooms.length == 1 %> discovered,
+  Accumulated across every session ever logged &mdash; <span id="map-room-count"><%= @world_map.rooms.length %></span> room<%= "s" unless @world_map.rooms.length == 1 %> discovered,
   <%= @world_map.edges.length %> known connection<%= "s" unless @world_map.edges.length == 1 %>.
 </p>
 
-<% if @live.any? %>
-  <div class="banner banner-ok">&#9679; <%= @live.length %> agent<%= "s" if @live.length != 1 %> playing right now</div>
-<% end %>
+<div id="map-live-banner">
+  <% if @live.any? %>
+    <div class="banner banner-ok">&#9679; <%= @live.length %> agent<%= "s" if @live.length != 1 %> playing right now</div>
+  <% end %>
+</div>
 
-<% if @rooms.empty? %>
+<% if @world_map.rooms.empty? %>
   <p class="empty">No rooms discovered yet &mdash; play a session that calls <code>look</code>/<code>move</code> to populate the map.</p>
 <% else %>
   <div class="map-scroll">
@@ -20,43 +22,75 @@
 
 <div class="breakdown">
   <div class="breakdown-title">Agents playing right now</div>
-  <% if @live.empty? %>
-    <p class="empty">No live sessions (no activity in the last 60s).</p>
-  <% else %>
-    <table class="breakdown-table">
-      <thead>
-        <tr>
-          <th>Session</th>
-          <th>Task</th>
-          <th>Model</th>
-          <th>Current room</th>
-          <th class="nowrap">Turn / iter</th>
-        </tr>
-      </thead>
-      <tbody>
-        <% @live.each do |s| %>
+  <div id="map-live-table">
+    <% if @live.empty? %>
+      <p class="empty">No live sessions (no activity in the last 60s).</p>
+    <% else %>
+      <table class="breakdown-table">
+        <thead>
           <tr>
-            <td><a href="/sessions/<%= s[:session_id] %>"><%= s[:session_id] %></a></td>
-            <td><%= s[:task] || "&mdash;" %></td>
-            <td><%= [s[:provider], s[:model]].compact.join(" / ") %></td>
-            <td><%= s[:last_room] || "&mdash;" %></td>
-            <td class="nowrap"><%= s[:turn] %> / <%= s[:iteration] %></td>
+            <th>Session</th>
+            <th>Task</th>
+            <th>Model</th>
+            <th>Current room</th>
+            <th class="nowrap">Turn / iter</th>
           </tr>
-        <% end %>
-      </tbody>
-    </table>
-  <% end %>
+        </thead>
+        <tbody>
+          <% @live.each do |s| %>
+            <tr>
+              <td><a href="/sessions/<%= s[:session_id] %>"><%= s[:session_id] %></a></td>
+              <td><%= s[:task] || "&mdash;" %></td>
+              <td><%= [s[:provider], s[:model]].compact.join(" / ") %></td>
+              <td><%= s[:last_room] || "&mdash;" %></td>
+              <td class="nowrap"><%= s[:turn] %> / <%= s[:iteration] %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    <% end %>
+  </div>
 </div>
 
 <div class="breakdown">
   <div class="breakdown-title">Discoveries &mdash; items/mobs/NPCs noticed in room text</div>
+
+  <form class="map-filter-form" method="get" action="/map">
+    <input type="text" name="q" placeholder="search subject or text&hellip;" value="<%= @q %>">
+    <select name="kind">
+      <option value="">any kind</option>
+      <% @kinds.each do |k| %>
+        <option value="<%= k %>" <%= "selected" if @kind == k %>><%= k %></option>
+      <% end %>
+    </select>
+    <select name="room">
+      <option value="">any room</option>
+      <% @room_titles.each do |title| %>
+        <option value="<%= title %>" <%= "selected" if @room == title %>><%= title %></option>
+      <% end %>
+    </select>
+    <select name="examined">
+      <option value="">examined or not</option>
+      <option value="1" <%= "selected" if @examined == true %>>examined only</option>
+      <option value="0" <%= "selected" if @examined == false %>>unexamined only</option>
+    </select>
+    <button type="submit">Filter</button>
+    <% if @q.to_s != "" || @kind.to_s != "" || @room.to_s != "" || !@examined.nil? %>
+      <a href="/map" class="map-filter-clear">Clear</a>
+    <% end %>
+  </form>
+
   <% if @discoveries.empty? %>
-    <p class="empty">Nothing noticed yet.</p>
+    <p class="empty">Nothing matches &mdash; try clearing the filter.</p>
   <% else %>
     <table class="breakdown-table">
       <thead>
         <tr>
-          <th>Noticed</th>
+          <th>Subject</th>
+          <th>Kind</th>
+          <th>Examined</th>
+          <th>Findings</th>
+          <th>Noticed (raw text)</th>
           <th>Room(s)</th>
           <th class="nowrap">First seen</th>
         </tr>
@@ -64,6 +98,22 @@
       <tbody>
         <% @discoveries.each do |d| %>
           <tr>
+            <td><%= text_html(d[:subject] || d[:content]) %></td>
+            <td><span class="kind-badge kind-<%= d[:kind] %>"><%= d[:kind] %></span></td>
+            <td>
+              <% if d[:examined] %>
+                <span class="examined-badge examined-yes">&check; examined</span>
+              <% else %>
+                <span class="examined-badge examined-no">not yet</span>
+              <% end %>
+            </td>
+            <td class="discovery-findings">
+              <% if d[:examination_result].to_s.strip != "" %>
+                <%= text_html(truncate(d[:examination_result], 140)) %>
+              <% else %>
+                <span class="muted">&mdash;</span>
+              <% end %>
+            </td>
             <td><%= text_html(d[:content]) %></td>
             <td><%= d[:rooms].join(", ") %></td>
             <td class="nowrap"><%= format_time(d[:first_seen_at]) %></td>
@@ -71,11 +121,29 @@
         <% end %>
       </tbody>
     </table>
+    <% if @next_before %>
+      <div class="map-pagination">
+        <a href="/map?<%= build_query(q: @q, kind: @kind, room: @room, examined: params[:examined], before: @next_before, room_q: @room_q, rooms_before: @rooms_before) %>">Older discoveries &rarr;</a>
+      </div>
+    <% end %>
   <% end %>
 </div>
 
 <div class="breakdown">
   <div class="breakdown-title">Rooms</div>
+
+  <form class="map-filter-form" method="get" action="/map">
+    <input type="hidden" name="q" value="<%= @q %>">
+    <input type="hidden" name="kind" value="<%= @kind %>">
+    <input type="hidden" name="room" value="<%= @room %>">
+    <input type="hidden" name="examined" value="<%= params[:examined] %>">
+    <input type="text" name="room_q" placeholder="search room title/description&hellip;" value="<%= @room_q %>">
+    <button type="submit">Filter</button>
+    <% if @room_q.to_s != "" %>
+      <a href="/map?<%= build_query(q: @q, kind: @kind, room: @room, examined: params[:examined]) %>" class="map-filter-clear">Clear</a>
+    <% end %>
+  </form>
+
   <table class="breakdown-table">
     <thead>
       <tr>
@@ -96,6 +164,97 @@
       <% end %>
     </tbody>
   </table>
+  <% if @next_rooms_before %>
+    <div class="map-pagination">
+      <a href="/map?<%= build_query(q: @q, kind: @kind, room: @room, examined: params[:examined], room_q: @room_q, rooms_before: @next_rooms_before) %>">Older rooms &rarr;</a>
+    </div>
+  <% end %>
 </div>
 
-<meta http-equiv="refresh" content="15">
+<meta http-equiv="refresh" content="15" id="map-meta-refresh">
+
+<!--
+  Small, plain, no-framework live-update poller (room_world_inspector.md
+  §5) — a deliberate, narrow departure from this project's otherwise
+  plain-ERB/no-JS house style. Polls /map/live.json every few seconds and
+  patches only the live-session table/banner and a "N new since last
+  check" counter; it never touches the filtered/paginated tables above (a
+  full re-fetch of those belongs to the user clicking, not to a timer).
+  If JS is disabled, the <meta refresh> above is the fallback and this
+  script simply never runs.
+-->
+<script>
+  (function () {
+    var metaRefresh = document.getElementById("map-meta-refresh");
+    if (metaRefresh) metaRefresh.remove(); // JS is running — no need for a full reload
+
+    var since = new Date().toISOString();
+    var pollMs = 5000;
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, function (c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+      });
+    }
+
+    function renderLiveTable(live) {
+      var container = document.getElementById("map-live-table");
+      if (!live.length) {
+        container.innerHTML = '<p class="empty">No live sessions (no activity in the last 60s).</p>';
+        return;
+      }
+      var rows = live.map(function (s) {
+        return "<tr>" +
+          '<td><a href="/sessions/' + encodeURIComponent(s.session_id) + '">' + escapeHtml(s.session_id) + "</a></td>" +
+          "<td>" + escapeHtml(s.task || "—") + "</td>" +
+          "<td>" + escapeHtml([s.provider, s.model].filter(Boolean).join(" / ")) + "</td>" +
+          "<td>" + escapeHtml(s.room || "—") + "</td>" +
+          '<td class="nowrap">' + s.turn + " / " + s.iteration + "</td>" +
+          "</tr>";
+      }).join("");
+      container.innerHTML = '<table class="breakdown-table"><thead><tr>' +
+        "<th>Session</th><th>Task</th><th>Model</th><th>Current room</th>" +
+        '<th class="nowrap">Turn / iter</th></tr></thead><tbody>' + rows + "</tbody></table>";
+    }
+
+    function renderBanner(live) {
+      var banner = document.getElementById("map-live-banner");
+      if (!live.length) { banner.innerHTML = ""; return; }
+      banner.innerHTML = '<div class="banner banner-ok">&#9679; ' + live.length +
+        " agent" + (live.length !== 1 ? "s" : "") + " playing right now</div>";
+    }
+
+    function renderNewBanner(newRooms, newDiscoveries) {
+      var existing = document.getElementById("map-new-since-banner");
+      if (!newRooms && !newDiscoveries) {
+        if (existing) existing.remove();
+        return;
+      }
+      var text = [];
+      if (newRooms) text.push(newRooms + " new room" + (newRooms !== 1 ? "s" : ""));
+      if (newDiscoveries) text.push(newDiscoveries + " new discover" + (newDiscoveries !== 1 ? "ies" : "y"));
+      var html = '<div class="banner banner-warn">' + text.join(", ") +
+        ' since you loaded this page — <a href="/map">refresh to see them</a></div>';
+      if (existing) {
+        existing.outerHTML = html.replace("<div", '<div id="map-new-since-banner"');
+      } else {
+        document.getElementById("map-live-banner").insertAdjacentHTML(
+          "afterend", html.replace("<div", '<div id="map-new-since-banner"'));
+      }
+    }
+
+    function poll() {
+      fetch("/map/live.json?since=" + encodeURIComponent(since))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          renderBanner(data.live);
+          renderLiveTable(data.live);
+          renderNewBanner(data.new_rooms, data.new_discoveries);
+        })
+        .catch(function () { /* transient fetch error — try again next tick */ })
+        .finally(function () { setTimeout(poll, pollMs); });
+    }
+
+    setTimeout(poll, pollMs);
+  })();
+</script>

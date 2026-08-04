@@ -18,6 +18,19 @@ This is reconstructed entirely from data already logged in
 behavior change. Same contract as the other three plans in this directory:
 this plan touches none of `week2_observability/ruby/12_context/`.
 
+> **Update (room_world_inspector.md):** this plan's own scope is still
+> exactly what's described above — `log_viz` remains a passive reader,
+> `12_context` remains untouched. But "no agent behavior change" no longer
+> holds *project-wide*: `docs/plans/observability/room_world_inspector.md`
+> §3 adds a `room_knowledge` tool to a **new** step,
+> `week2_observability/ruby/13_room_inspector/` (branched from
+> `12_context`, which stays the source of truth), that reads this plan's
+> `WorldMap`-owned schema (`content_facts`/`examinations`, both additive to
+> what's designed here) read-only. It's the first agent-side consumer of
+> data this plan produces — worth knowing if you're changing the `rooms`/
+> `room_contents` schema this plan defines below, since `13_room_inspector/
+> lib/boukensha/world_knowledge.rb` now depends on it too.
+
 The map/discoveries data is **historical and cross-session** — every agent
 run adds to one accumulating world model rather than starting from empty —
 and doubles as the multi-agent monitoring view: "where is each agent right

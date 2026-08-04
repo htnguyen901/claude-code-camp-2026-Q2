@@ -877,3 +877,109 @@ table.sessions a:hover {
   50%  { opacity: 0.45; r: 15; }
   100% { opacity: 1;   r: 10; }
 }
+
+/* Search/filter form (room_world_inspector.md §4) */
+.map-filter-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.map-filter-form input[type="text"] {
+  flex: 1 1 200px;
+  min-width: 160px;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 0.85rem;
+}
+
+.map-filter-form select {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 0.85rem;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.map-filter-form button {
+  padding: 0.35rem 0.9rem;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.map-filter-form button:hover {
+  opacity: 0.9;
+}
+
+.map-filter-clear {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.map-pagination {
+  margin-top: 0.6rem;
+  font-size: 0.85rem;
+}
+
+.map-pagination a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.map-pagination a:hover {
+  text-decoration: underline;
+}
+
+/* Content-fact kind badge (item/mob/npc/scenery/unknown) */
+.kind-badge {
+  display: inline-block;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  color: #fff;
+}
+
+.kind-item    { background: #7c3aed; }
+.kind-mob     { background: #c2410c; }
+.kind-npc     { background: #1d4ed8; }
+.kind-scenery { background: #16a34a; }
+.kind-unknown { background: var(--muted); }
+
+/* Examined / not-yet marker (room_world_inspector.md §2) */
+.examined-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.examined-yes {
+  color: #1e7e34;
+  background: #e6f4ea;
+}
+
+.examined-no {
+  color: #a15c00;
+  background: #fff4e5;
+}
+
+/* Discoveries "Findings" column — the examine/look-at result text
+   (log_viz/lib/log_viz/world_map.rb's EXAMINATION_RESULT_SQL). Capped and
+   wrapped rather than left to stretch the table to one long line. */
+.discovery-findings {
+  max-width: 22rem;
+  white-space: normal;
+  word-break: break-word;
+}

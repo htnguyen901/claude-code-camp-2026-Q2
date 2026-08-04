@@ -26,6 +26,18 @@ module LogViz
       raw_ansi_text.to_s.gsub(Ansi::ESCAPE_RE, "").gsub("\r\n", "\n")
     end
 
+    # Strips ANSI, blank lines, and the trailing HP/Mana/Move status-prompt
+    # line from a raw MUD reply that ISN'T itself a room echo — namely an
+    # `examine`/`look at <target>` result. `#parse` already discards the
+    # prompt line from a room's `contents`; this is the same cleanup for
+    # WorldMap#record_examination, so a persisted `examinations.result_text`
+    # (surfaced as a discoveries row's "Findings" / a room_knowledge tool
+    # result's clue) is the actual answer text, not
+    # "...\n\n21H 100M 83V (news) (motd) > " noise appended to it.
+    def self.clean_reply(raw_ansi_text)
+      strip_ansi(raw_ansi_text).split("\n").map(&:strip).reject { |l| l.empty? || l =~ PROMPT_RE }.join(" ").strip
+    end
+
     # Returns nil for anything that isn't a real room echo — a failed move
     # ("Alas, you cannot go that way..."), a dark room ("It is pitch
     # black..."), a mangled/misattributed result, etc. Callers must treat

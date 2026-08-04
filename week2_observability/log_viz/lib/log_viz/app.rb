@@ -1,10 +1,12 @@
 require "sinatra/base"
 require "time"
 require "json"
+require "cgi"
 
 require_relative "session"
 require_relative "ansi"
 require_relative "world_map"
+require_relative "content_fact"
 
 module LogViz
   class App < Sinatra::Base
@@ -200,6 +202,15 @@ module LogViz
         rows << { name: "Total", tokens: total + entry.comp_output_tokens.to_i, pct: nil, cost: entry.comp_cost_usd, total_row: true }
 
         rows
+      end
+
+      # Builds a query string for the /map pagination/"clear filter" links,
+      # dropping nil/blank values so a link never carries an empty
+      # `&kind=` param around (room_world_inspector.md §4).
+      def build_query(params_hash)
+        params_hash.reject { |_, v| v.nil? || v.to_s.empty? }
+                   .map { |k, v| "#{CGI.escape(k.to_s)}=#{CGI.escape(v.to_s)}" }
+                   .join("&")
       end
 
       def fmt_bytes(n)
@@ -419,12 +430,65 @@ module LogViz
       erb :session
     end
 
+    PAGE_SIZE = 50
+
+    # Search/filter + paginated world map (room_world_inspector.md §4).
+    # `q`/`kind`/`room`/`examined` filter the discoveries table; `room_q`
+    # filters the rooms table; `before`/`rooms_before` are keyset-pagination
+    # cursors (a first_seen_at value — "older than this"), one per table so
+    # paging one doesn't reset the other.
     get "/map" do
-      @world_map   = world_map
-      @rooms       = @world_map.rooms.sort_by { |r| r[:first_seen][:at].to_s }
-      @discoveries = @world_map.discoveries
+      @world_map = world_map
+
+      @q        = params[:q]
+      @kind     = params[:kind]
+      @room     = params[:room]
+      @examined = case params[:examined]
+                  when "1" then true
+                  when "0" then false
+                  end
+      @before   = params[:before]
+
+      @discoveries = @world_map.discoveries(q: @q, kind: @kind, room: @room, examined: @examined,
+                                             before: @before, limit: PAGE_SIZE)
+      @next_before = @discoveries.last[:first_seen_at] if @discoveries.length == PAGE_SIZE
+
+      @room_q       = params[:room_q]
+      @rooms_before = params[:rooms_before]
+      @rooms = @world_map.rooms_matching(q: @room_q, before: @rooms_before, limit: PAGE_SIZE)
+      @next_rooms_before = @rooms.last[:first_seen][:at] if @rooms.length == PAGE_SIZE
+
+      @room_titles = @world_map.rooms.map { |r| r[:title] }.sort
+      @kinds       = LogViz::ContentFact::KINDS + ["unknown"]
       @live        = @world_map.live_sessions
       erb :map
+    end
+
+    # Polling endpoint for /map's live-update script (room_world_inspector
+    # .md §5) — live session markers plus "N new since `since`" counters for
+    # rooms/discoveries, so the page can patch itself without a full reload.
+    # No SSE/held-open connection (deliberately rejected for this scope, see
+    # the plan) — just a cheap, already-indexed query per poll.
+    get "/map/live.json" do
+      content_type :json
+      wm = world_map
+
+      by_title = wm.rooms.each_with_object({}) { |r, h| h[r[:title]] = r if r[:coord] }
+      live = wm.live_sessions.map do |s|
+        room = s[:last_room] && by_title[s[:last_room]]
+        {
+          session_id: s[:session_id], task: s[:task],
+          provider: s[:provider], model: s[:model],
+          room: s[:last_room], coord: room && room[:coord],
+          turn: s[:turn], iteration: s[:iteration]
+        }
+      end
+
+      since = params[:since]
+      new_rooms       = since ? wm.rooms.count { |r| r[:first_seen][:at].to_s > since } : 0
+      new_discoveries = since ? wm.discoveries(limit: nil).count { |d| d[:first_seen_at].to_s > since } : 0
+
+      JSON.generate(live: live, new_rooms: new_rooms, new_discoveries: new_discoveries, at: Time.now.utc.iso8601)
     end
   end
 end

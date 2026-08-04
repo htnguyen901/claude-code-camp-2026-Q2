@@ -10,6 +10,23 @@ tasks:
     prompt_override:
       system: true
 
+  # log_viz's background content-classification subtask (ContentFact —
+  # docs/plans/observability/room_world_inspector.md §1), read by
+  # LogViz::Settings, NOT by the boukensha gem — log_viz is a separate Ruby
+  # program that just happens to read this same file. Same "task" shape as
+  # `player` above (provider/model), so it's configured the same way.
+  #
+  # Only `provider: ollama` is actually implemented today — a different
+  # value here is accepted (won't raise) but falls back to ollama with a
+  # warning, since this is a best-effort background feature, not something
+  # that should block log_viz from starting. `host` is optional; the
+  # `OLLAMA_HOST` env var still overrides it if set (useful when log_viz
+  # and Ollama don't share a network namespace, e.g. cross-VM/WSL setups).
+  content_fact:
+    provider: ollama
+    model: gemma4
+    # host: http://localhost:11434
+
 # mud:
 #   host: localhost
 #   port: 4000
@@ -44,4 +61,23 @@ mcp_servers:
       command:  npx
       args:     [-y, "@modelcontextprotocol/server-filesystem", /tmp]
       prefix:   fs
-      required: false          
+      required: false
+
+# log_viz / room_knowledge (docs/plans/observability/room_world_inspector.md)
+# — provider/model/host for the content-fact subtask now live in
+# `tasks.content_fact` above. What's left is still environment-only, since
+# it's per-machine path/network config rather than a "task" setting:
+#
+#   LOG_VIZ_WORLD_MAP_DB  default: <repo root>/.boukensha/world_map.sqlite3
+#     SQLite file log_viz's WorldMap reads/writes, and the same file
+#     week2_observability/ruby/13_room_inspector's room_knowledge tool
+#     opens read-only.
+#   LOG_VIZ_SESSIONS_DIR  default: <repo root>/.boukensha/sessions
+#   OLLAMA_HOST           default: http://localhost:11434 (or tasks.content_fact.host above)
+#     Must be reachable from wherever log_viz runs, which may not be the
+#     same host/container the agent's own Ollama backend (backends/
+#     ollama.rb) hits — e.g. Ollama running natively in WSL (this repo's
+#     dev setup) needs no override; Ollama on the Windows host instead of
+#     inside WSL would need this pointed at the Windows-side address.
+#     Unreachable is a soft failure (kind: "unknown"), never blocks
+#     ingestion.
