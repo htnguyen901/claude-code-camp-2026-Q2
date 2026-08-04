@@ -836,18 +836,35 @@ table.sessions a:hover {
   vertical-align: middle;
 }
 
-/* World Map page */
+/* World Map page (world_map_visualization.md) */
+.map-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
 .map-scroll {
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
-  margin-bottom: 1.5rem;
+  cursor: grab;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
+.map-scroll.dragging {
+  cursor: grabbing;
+}
+
+/* Explicit width/height on the generated <svg> (see app.rb#map_svg) give it
+   a real intrinsic size, so this rule must NOT force it back to the
+   container width — that's exactly what made the map unscrollable before
+   (the browser shrank the whole viewBox to fit instead of overflowing). */
 .map-svg {
   display: block;
-  min-width: 100%;
+  user-select: none;
 }
 
 .map-edge {
@@ -855,21 +872,97 @@ table.sessions a:hover {
   stroke-width: 2;
 }
 
-.map-node-dot {
+.map-node-link {
+  cursor: pointer;
+}
+
+.map-node-box {
   fill: var(--panel);
   stroke: var(--accent);
   stroke-width: 2;
 }
 
+.map-node-link:hover .map-node-box {
+  fill: var(--user-bg);
+}
+
 .map-node-label {
   font-size: 12px;
   fill: var(--text);
+  pointer-events: none;
 }
 
 .map-live-marker {
   fill: none;
   stroke-width: 3;
   animation: map-pulse 1.6s ease-in-out infinite;
+}
+
+/* Click-to-inspect side panel (world_map_visualization.md §3) */
+.room-detail-panel {
+  position: relative;
+  flex: 0 0 300px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 0.9rem;
+  align-self: stretch;
+  overflow-y: auto;
+}
+
+.room-detail-close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.6rem;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.1rem 0.3rem;
+}
+
+.room-detail-close:hover {
+  color: var(--text);
+}
+
+#room-detail-body h3 {
+  margin: 0 1.5rem 0.35rem 0;
+  font-size: 1rem;
+}
+
+.room-detail-meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin: 0 0 0.5rem;
+}
+
+.room-detail-desc {
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin: 0 0 0.75rem;
+}
+
+.room-detail-discoveries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.room-detail-discoveries li {
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.room-detail-finding {
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-size: 0.8rem;
 }
 
 @keyframes map-pulse {

@@ -15,8 +15,14 @@
 <% if @world_map.rooms.empty? %>
   <p class="empty">No rooms discovered yet &mdash; play a session that calls <code>look</code>/<code>move</code> to populate the map.</p>
 <% else %>
-  <div class="map-scroll">
-    <%= map_svg(@world_map) %>
+  <div class="map-layout">
+    <div class="map-scroll">
+      <%= map_svg(@world_map) %>
+    </div>
+    <div id="room-detail-panel" class="room-detail-panel" hidden>
+      <button type="button" id="room-detail-close" class="room-detail-close" aria-label="Close room details">&times;</button>
+      <div id="room-detail-body"></div>
+    </div>
   </div>
 <% end %>
 
@@ -174,14 +180,21 @@
 <meta http-equiv="refresh" content="15" id="map-meta-refresh">
 
 <!--
-  Small, plain, no-framework live-update poller (room_world_inspector.md
-  §5) — a deliberate, narrow departure from this project's otherwise
-  plain-ERB/no-JS house style. Polls /map/live.json every few seconds and
-  patches only the live-session table/banner and a "N new since last
-  check" counter; it never touches the filtered/paginated tables above (a
-  full re-fetch of those belongs to the user clicking, not to a timer).
-  If JS is disabled, the <meta refresh> above is the fallback and this
-  script simply never runs.
+  Small, plain, no-framework script (room_world_inspector.md §5,
+  world_map_visualization.md §2/§3) — a deliberate, narrow departure from
+  this project's otherwise plain-ERB/no-JS house style. Three independent
+  pieces, all with a working non-JS fallback:
+  1. Live-update poller: polls /map/live.json every few seconds and
+     patches only the live-session table/banner and a "N new since last
+     check" counter; never touches the filtered/paginated tables above (a
+     full re-fetch of those belongs to the user clicking, not a timer).
+     Falls back to the <meta refresh> above if JS is disabled.
+  2. Drag-to-pan on the map canvas: layered on top of native scrolling
+     (.map-scroll's `overflow: auto`), never a replacement for it.
+  3. Click-to-inspect: intercepts a click on a room box and fetches
+     /map/rooms/:title.json into an inline panel instead of following the
+     box's <a href="/map?room=..."> — which is itself the fallback if the
+     fetch fails or JS never ran.
 -->
 <script>
   (function () {
@@ -256,5 +269,103 @@
     }
 
     setTimeout(poll, pollMs);
+
+    // ---- 2. Drag-to-pan + 3. click-to-inspect (world_map_visualization.md §2/§3) ----
+    var mapScroll = document.querySelector(".map-scroll");
+    var detailPanel = document.getElementById("room-detail-panel");
+    var detailBody = document.getElementById("room-detail-body");
+    var detailClose = document.getElementById("room-detail-close");
+
+    if (mapScroll && detailPanel) {
+      var DRAG_THRESHOLD_PX = 4;
+      var dragState = null; // { startX, startY, startScrollLeft, startScrollTop, moved }
+
+      function onMouseMove(e) {
+        if (!dragState) return;
+        var dx = e.clientX - dragState.startX;
+        var dy = e.clientY - dragState.startY;
+        if (!dragState.moved && (Math.abs(dx) > DRAG_THRESHOLD_PX || Math.abs(dy) > DRAG_THRESHOLD_PX)) {
+          dragState.moved = true;
+          mapScroll.classList.add("dragging");
+        }
+        if (dragState.moved) {
+          mapScroll.scrollLeft = dragState.startScrollLeft - dx;
+          mapScroll.scrollTop = dragState.startScrollTop - dy;
+        }
+      }
+
+      function onMouseUp() {
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        mapScroll.classList.remove("dragging");
+        // dragState (and its `moved` flag) is read by the click handler
+        // below, which fires right after mouseup — cleared there, not here.
+      }
+
+      mapScroll.addEventListener("mousedown", function (e) {
+        if (e.button !== 0) return; // left-click/primary touch only
+
+        dragState = {
+          startX: e.clientX, startY: e.clientY,
+          startScrollLeft: mapScroll.scrollLeft, startScrollTop: mapScroll.scrollTop,
+          moved: false
+        };
+        document.addEventListener("mousemove", onMouseMove);
+        document.addEventListener("mouseup", onMouseUp);
+      });
+
+      function renderRoomDetail(data) {
+        var exits = (data.exits || []).join(" ") || "—";
+        var discoveryItems = (data.discoveries || []).map(function (d) {
+          var examinedBadge = d.examined
+            ? '<span class="examined-badge examined-yes">&check; examined</span>'
+            : '<span class="examined-badge examined-no">not yet</span>';
+          var finding = d.examination_result
+            ? escapeHtml(d.examination_result)
+            : '<span class="muted">—</span>';
+          return "<li>" +
+            '<span class="kind-badge kind-' + escapeHtml(d.kind) + '">' + escapeHtml(d.kind) + "</span> " +
+            "<strong>" + escapeHtml(d.subject) + "</strong> " + examinedBadge +
+            '<div class="room-detail-finding">' + finding + "</div>" +
+            "</li>";
+        }).join("");
+
+        detailBody.innerHTML =
+          "<h3>" + escapeHtml(data.title) + "</h3>" +
+          '<p class="room-detail-meta">Visited ' + data.visit_count + "&times; &middot; exits: " +
+          escapeHtml(exits) + "</p>" +
+          (data.description ? '<p class="room-detail-desc">' + escapeHtml(data.description) + "</p>" : "") +
+          (discoveryItems
+            ? '<ul class="room-detail-discoveries">' + discoveryItems + "</ul>"
+            : '<p class="empty">No discoveries in this room yet.</p>');
+      }
+
+      function openRoomDetail(title) {
+        fetch("/map/rooms/" + encodeURIComponent(title) + ".json")
+          .then(function (r) { if (!r.ok) throw new Error("room lookup failed"); return r.json(); })
+          .then(function (data) {
+            renderRoomDetail(data);
+            detailPanel.hidden = false;
+          })
+          .catch(function () { /* leave the panel as-is; the <a> fallback would have navigated if JS were off */ });
+      }
+
+      mapScroll.addEventListener("click", function (e) {
+        var wasDrag = dragState && dragState.moved;
+        dragState = null;
+        if (wasDrag) { e.preventDefault(); return; }
+
+        var link = e.target.closest(".map-node-link");
+        if (!link) return;
+
+        var node = link.querySelector(".map-node[data-room]");
+        if (!node) return;
+
+        e.preventDefault();
+        openRoomDetail(node.getAttribute("data-room"));
+      });
+
+      detailClose.addEventListener("click", function () { detailPanel.hidden = true; });
+    }
   })();
 </script>

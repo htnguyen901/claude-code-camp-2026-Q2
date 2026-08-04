@@ -1,7 +1,7 @@
 ## Week 2 Technical Documentation 
 
 ## Problems observed in Week 1
-**These are considered high-risked limitation that needs to be optimized prior to the implementation of Week 2 - when we allow agents to be capable of executing the goal on its own
+These are considered high-risked limitation that needs to be optimized prior to the implementation of Week 2 - when we allow agents to be capable of executing the goal on its own
 - The agent is currently highly token-inefficient. 
 - As the codebase grows much larger, it's hard for engineer (us) to observe the reasoning process of agent and how it decides tool calling. 
 - Log viz is not real time nor human-friendly readable nor interactive making human review and guidance different (with no planning and guidance in place).
@@ -31,9 +31,9 @@
 ### 1. Expose Request payload details
 - Tasked to find the bakery but decided to find bar instead => Found system prompt has never been passed 
 - Tools take up the majority of request payload and token count
-- 
 
 > I need visibility on token breakdown and cost to have better judgement on tools size
+> For every request, the raw output from MUD is injected to the next request payload. Can it be reduced/summarized?
 
 ### 2. Add Token composition and est. cost
 - Tools takes up 70-90% of the context, token are counted toward the allowed MAX
@@ -64,6 +64,8 @@
 - LLM cant tell npc and mobs apart, classifying most of the npcs as mobs (model used: Ollama - genma4)
 - Agents's moving slower than before => need to track time spent
 - Agents do not know how to read note, but examine note instead which is the wrong command
+    - The substask automatically inspect and log in findings: `You do not see that here` which is not a real findings
+    > Agent might need to manage its own inpsect room call. To try calling diffrent tools till a real desc is reached
 - Agents struggles to call the right command
     - Found bakery but circle through: read signs, examine counter, back to look. Then just assume the look command gives 'what is on the menu' which is only 2 items and the bakery infact has 3
     - When prompted to 'check exact items sold and their price' then Agents successfully called `list` and completed the task
@@ -83,11 +85,14 @@
 - Past paths can only be traced thru session textual log and not on map tracking
 > Minor implementation of a better map viz
 
-## 6. Compact & Expose context injected
+### 6. Compact & Expose context injected
+A subprocess/subtask to summarize MUD outputs to inject to next output call to optimize context/token
 
+### 7. Tracing
+Noticed Agent is taking more time than before
+ 
 
-## 7. Seed players bin & Add safe fallback error when player not created
-- 
+## 8. Seed players bin & Add safe fallback error when player not created
 
 
 

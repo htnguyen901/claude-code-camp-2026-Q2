@@ -347,44 +347,180 @@ module LogViz
         %(<span class="loc-badge">&rarr; #{text_html(room_title)}</span>)
       end
 
+      # Room-node box size (world_map_visualization.md §1) — fixed, not
+      # text-measured (SVG text can't be measured server-side in Ruby
+      # without a browser). Overlap between adjacent rooms is prevented by
+      # construction: a constant box size plus grid spacing (`map_svg`'s
+      # `cell`/`margin` defaults) wider than the box, not by measuring
+      # anything. The label itself is `truncate`d to fit; the full title
+      # always stays available via the `<title>` hover tooltip and the
+      # click-to-inspect panel (§3), never only on the truncated label.
+      MAP_NODE_BOX_W = 130
+      MAP_NODE_BOX_H = 36
+      MAP_NODE_LABEL_CHARS = 18
+
+      # HTML-attribute-safe escaping (adds quote-escaping on top of
+      # `text_html`/`Ansi.escape_html`, which only handles `&`/`<`/`>` —
+      # needed here because room titles are interpolated inside a
+      # double-quoted `data-room="..."` attribute, not just element text).
+      def attr_html(text)
+        text_html(text).gsub('"', "&quot;")
+      end
+
       # Inline SVG node-link graph of the accumulated world map
-      # (player_journey_map.md §2/§4). Room coordinates are precomputed and
+      # (player_journey_map.md §2/§4, redesigned per
+      # world_map_visualization.md). Room coordinates are precomputed and
       # stored by `WorldMap` from real compass directions, so this is pure
-      # rendering — no layout algorithm, no JS, same house style as the
-      # sparkline helpers above.
-      def map_svg(world_map, cell: 90, margin: 70)
+      # rendering — no layout algorithm. Each room renders as a fixed-size
+      # labeled box (not a dot+adjacent-label) wrapped in a plain `<a
+      # href="/map?room=...">` so clicking a room does something useful
+      # (jumps to that room's pre-filtered discoveries/rooms tables) even
+      # without JS; `map.erb`'s script progressively enhances that click
+      # into an inline detail panel instead of a full navigation. The
+      # `<svg>` itself gets explicit pixel `width`/`height` (not just
+      # `viewBox`) so `.map-scroll`'s `overflow: auto` produces real
+      # scrollbars on a map bigger than its container, instead of the
+      # browser shrinking the whole `viewBox` to fit.
+      # Rendering-only vertical fan-out gap for rooms that share the
+      # identical stored coordinate (see `map_svg`'s cluster-disambiguation
+      # comment below). Vertical, not horizontal: `cell`'s grid spacing is
+      # 160px but a box is 130px *wide* and only 36px *tall*, so a
+      # horizontal fan wide enough to separate 3+ clustered siblings (an
+      # earlier version of this fix used one) eats most of the 30px of
+      # horizontal slack to the next grid column and collides with whatever
+      # unrelated room already lives there — verified against real data:
+      # that version *raised* the total overlap count (9 → 11), not lowered
+      # it. A vertical fan has ~124px of headroom to the next grid row
+      # before the same problem recurs (160 cell − 36 box height), so a
+      # small fixed gap comfortably clears it even for a several-room
+      # cluster. Still just a fixed offset, not a real layout algorithm.
+      MAP_CLUSTER_FAN_GAP = MAP_NODE_BOX_H + 8
+
+      # Generic pairwise overlap resolution (below), for any two boxes that
+      # still end up too close after grid placement + cluster fan-out —
+      # e.g. a fanned cluster member landing near an unrelated neighbor,
+      # or (in principle) two independent fan-outs interacting. Bounded,
+      # deterministic passes; see `resolve_node_overlaps!`.
+      MAP_OVERLAP_PASSES = 6
+      MAP_OVERLAP_PADDING = 6
+
+      # Pushes any two still-overlapping room boxes (after grid placement +
+      # cluster fan-out, both above) apart along whichever axis needs the
+      # smaller nudge to clear — a standard minimum-translation AABB
+      # separation, run for a bounded number of passes rather than to a
+      # convergence guarantee. `order` fixes the pairwise-processing order
+      # (titles, sorted) so the result is stable across requests — `rooms`
+      # itself has no `ORDER BY` in `WorldMap#rooms`, and this is a greedy
+      # relaxation whose outcome depends on processing order. Mutates
+      # `positions` (title => [x, y]) in place.
+      def resolve_node_overlaps!(positions, order)
+        min_gap_x = MAP_NODE_BOX_W + MAP_OVERLAP_PADDING
+        min_gap_y = MAP_NODE_BOX_H + MAP_OVERLAP_PADDING
+
+        MAP_OVERLAP_PASSES.times do
+          moved = false
+
+          order.each_with_index do |title_a, i|
+            order[(i + 1)..].each do |title_b|
+              ax, ay = positions[title_a]
+              bx, by = positions[title_b]
+              dx, dy = bx - ax, by - ay
+              overlap_x = min_gap_x - dx.abs
+              overlap_y = min_gap_y - dy.abs
+              next unless overlap_x.positive? && overlap_y.positive?
+
+              moved = true
+              if overlap_x < overlap_y
+                push = overlap_x / 2.0 + 0.1
+                push = -push if dx.negative?
+                positions[title_a][0] -= push
+                positions[title_b][0] += push
+              else
+                push = overlap_y / 2.0 + 0.1
+                push = -push if dy.negative?
+                positions[title_a][1] -= push
+                positions[title_b][1] += push
+              end
+            end
+          end
+
+          break unless moved
+        end
+      end
+
+      def map_svg(world_map, cell: 160, margin: 90)
         rooms = world_map.rooms.select { |r| r[:coord] }
         return "" if rooms.empty?
 
         xs = rooms.map { |r| r[:coord][0] }
         ys = rooms.map { |r| r[:coord][1] }
-        min_x, max_x = xs.min, xs.max
-        min_y, max_y = ys.min, ys.max
+        min_x, min_y = xs.min, ys.min
 
-        svg_w = ((max_x - min_x) * cell + margin * 2).round(1)
-        svg_h = ((max_y - min_y) * cell + margin * 2).round(1)
+        raw_px = ->(x) { (x - min_x) * cell }
+        raw_py = ->(y) { (y - min_y) * cell }
 
-        px = ->(x) { ((x - min_x) * cell + margin).round(1) }
-        py = ->(y) { ((y - min_y) * cell + margin).round(1) }
+        # `WorldMap#assign_coordinate` places rooms from real compass deltas
+        # (world_map.rb), not a collision-free layout — it's a "documented
+        # simplification," not a bug, but it does mean two differently
+        # -explored paths can coincidentally compute the identical (x, y)
+        # (confirmed against real data: 5 rooms share coordinates with 1-2
+        # others out of 45 total). Left alone, that would render as fully
+        # overlapping, unclickable boxes — a rendering defect, since this
+        # plan's whole point is boxes that don't overlap "by construction."
+        # Fix at the rendering layer only (per "Not doing: any layout
+        # algorithm change" — `assign_coordinate` itself is untouched): a
+        # fixed, deterministic vertical fan-out around the shared point for
+        # any coordinate with more than one room at it, followed by a
+        # generic overlap-resolution pass (below) as a safety net.
+        positions = {}
+        rooms.group_by { |r| r[:coord] }.each_value do |group|
+          base_x, base_y = raw_px.call(group.first[:coord][0]), raw_py.call(group.first[:coord][1])
+          group.sort_by { |r| r[:title] }.each_with_index do |r, i|
+            offset = (i - (group.length - 1) / 2.0) * MAP_CLUSTER_FAN_GAP
+            positions[r[:title]] = [base_x, base_y + offset]
+          end
+        end
+
+        resolve_node_overlaps!(positions, rooms.map { |r| r[:title] }.sort)
+
+        # Canvas bounds are derived from the actual (post-fan-out)
+        # `positions`, not re-derived from grid math — the fan-out above
+        # deliberately perturbs some rooms off their nominal grid cell, so
+        # the ground truth for "how big does this canvas need to be" is
+        # where things actually ended up, padded by half a box plus the
+        # standard margin on every side.
+        half_w = MAP_NODE_BOX_W / 2.0
+        half_h = MAP_NODE_BOX_H / 2.0
+        min_px, max_px = positions.values.map(&:first).minmax
+        min_py, max_py = positions.values.map(&:last).minmax
+
+        shift_x, shift_y = margin - min_px + half_w, margin - min_py + half_h
+        positions.each_value { |pos| pos[0] = (pos[0] + shift_x).round(1); pos[1] = (pos[1] + shift_y).round(1) }
+
+        svg_w = (max_px + shift_x + half_w + margin).round(1)
+        svg_h = (max_py + shift_y + half_h + margin).round(1)
 
         by_title = rooms.each_with_object({}) { |r, h| h[r[:title]] = r }
 
         edges = world_map.edges.filter_map do |e|
-          from, to = by_title[e[:from]], by_title[e[:to]]
+          from, to = positions[e[:from]], positions[e[:to]]
           next unless from && to
 
-          %(<line class="map-edge" x1="#{px.call(from[:coord][0])}" y1="#{py.call(from[:coord][1])}" )+
-          %(x2="#{px.call(to[:coord][0])}" y2="#{py.call(to[:coord][1])}"><title>#{text_html(e[:from])} #{text_html(e[:via])} &rarr; #{text_html(e[:to])}</title></line>)
+          %(<line class="map-edge" x1="#{from[0]}" y1="#{from[1]}" )+
+          %(x2="#{to[0]}" y2="#{to[1]}"><title>#{text_html(e[:from])} #{text_html(e[:via])} &rarr; #{text_html(e[:to])}</title></line>)
         end.join
 
         nodes = rooms.map do |r|
-          x, y = px.call(r[:coord][0]), py.call(r[:coord][1])
+          x, y = positions[r[:title]]
+          href = "/map?#{build_query(room: r[:title], room_q: r[:title])}"
           <<~NODE
-            <g class="map-node" transform="translate(#{x}, #{y})">
-              <circle r="7" class="map-node-dot"/>
-              <text class="map-node-label" x="10" y="4">#{text_html(r[:title])}</text>
-              <title>#{text_html(r[:title])} &middot; visited #{r[:visit_count]}&times;</title>
-            </g>
+            <a href="#{href}" class="map-node-link">
+              <g class="map-node" data-room="#{attr_html(r[:title])}" transform="translate(#{x}, #{y})">
+                <rect class="map-node-box" x="#{-half_w}" y="#{-half_h}" width="#{MAP_NODE_BOX_W}" height="#{MAP_NODE_BOX_H}" rx="6"/>
+                <text class="map-node-label" x="0" y="4" text-anchor="middle">#{text_html(truncate(r[:title], MAP_NODE_LABEL_CHARS))}</text>
+                <title>#{text_html(r[:title])} &middot; visited #{r[:visit_count]}&times;</title>
+              </g>
+            </a>
           NODE
         end.join
 
@@ -393,7 +529,7 @@ module LogViz
           room = s[:last_room] && by_title[s[:last_room]]
           next unless room
 
-          x, y = px.call(room[:coord][0]), py.call(room[:coord][1])
+          x, y = positions[room[:title]]
           color = LIVE_MARKER_COLORS[i % LIVE_MARKER_COLORS.length]
           label = [s[:task], s[:model]].compact.join(" / ")
           <<~MARKER
@@ -404,7 +540,7 @@ module LogViz
         end.join
 
         <<~SVG
-          <svg class="map-svg" viewBox="0 0 #{svg_w} #{svg_h}" role="img" aria-label="world map">
+          <svg class="map-svg" width="#{svg_w}" height="#{svg_h}" viewBox="0 0 #{svg_w} #{svg_h}" role="img" aria-label="world map">
             #{edges}
             #{nodes}
             #{markers}
@@ -489,6 +625,36 @@ module LogViz
       new_discoveries = since ? wm.discoveries(limit: nil).count { |d| d[:first_seen_at].to_s > since } : 0
 
       JSON.generate(live: live, new_rooms: new_rooms, new_discoveries: new_discoveries, at: Time.now.utc.iso8601)
+    end
+
+    # Room detail for the map's click-to-inspect panel
+    # (world_map_visualization.md §3) — the same fields the Rooms/
+    # Discoveries tables already render, scoped to one room. Purely a read
+    # over WorldMap accessors that already existed for those tables
+    # (`#rooms`, `#discoveries`); no new WorldMap method needed. The `<a
+    # href="/map?room=...">` every map node is wrapped in (see `map_svg`)
+    # is the no-JS fallback for this same information — this endpoint only
+    # exists so map.erb's script can render it inline instead of
+    # navigating away.
+    get "/map/rooms/:title.json" do
+      content_type :json
+      wm    = world_map
+      title = params[:title]
+      room  = wm.rooms.find { |r| r[:title] == title }
+      halt 404, JSON.generate(error: "Room not found: #{title}") unless room
+
+      discoveries = wm.discoveries(room: title, limit: nil).map do |d|
+        {
+          subject: d[:subject] || d[:content], content: d[:content], kind: d[:kind],
+          examined: d[:examined], examination_result: d[:examination_result]
+        }
+      end
+
+      JSON.generate(
+        title: room[:title], description: room[:description], exits: room[:exits],
+        visit_count: room[:visit_count], first_seen_at: room[:first_seen][:at],
+        discoveries: discoveries
+      )
     end
   end
 end
