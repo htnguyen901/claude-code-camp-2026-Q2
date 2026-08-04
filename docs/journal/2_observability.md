@@ -82,14 +82,32 @@ These are considered high-risked limitation that needs to be optimized prior to 
 
 ### 5. Path vizualizer
 - Node-link map on world map is low on readibility
-- Past paths can only be traced thru session textual log and not on map tracking
 > Minor implementation of a better map viz
 
+**Potential issue**: 
+- Uncertain how some rooms are overlapping each other. Might have been cause by the off-one bug
+- Log_viz is refresh in time_interval, clearing current view => need to remove
+
 ### 6. Compact & Expose context injected
-A subprocess/subtask to summarize MUD outputs to inject to next output call to optimize context/token
+A hook implemented as named collaborator to compact MUD's response before passing to context
+- Used ollama model for compactor: super slow wait during compactation
+
+**Tasked with check status and eat and drink if needed**
+- Agent keeps asking ending turns despite not completing the task. Further it'd go is to come up with
+a solution then ask if it can go ahead
+- Agent does not have a solid plan, head to bar to buy food and drinks but found out no money to buy,
+then concluded that it could look for other options such as fountain
+
+> Normally, player would know they need money and would check for money beforehand
+
+**Uncertainty**
+- Agent was able to get out of sewage, not sure if due to tool world_knowledge. Can't trace tool called. 
+    > Should trace tool call
+- Discoveries in room: Uncertain whether it needs to be included in compacted context or we could utilize
+player's knowledge
 
 ### 7. Tracing
-Noticed Agent is taking more time than before
+Noticed Agent was taking longer time than before
  
 
 ## 8. Seed players bin & Add safe fallback error when player not created

@@ -19,7 +19,7 @@ module LogViz
                        :comp_other_tokens, :comp_input_tokens, :comp_cache_read,
                        :comp_system_cost, :comp_tools_cost, :comp_messages_cost,
                        :comp_other_cost, :comp_output_cost, :comp_cost_usd,
-                       :comp_output_tokens, :room_title,
+                       :comp_output_tokens, :room_title, :injected_calls,
                        keyword_init: true)
 
     # One sample per `response`, in order. Drives the in-transcript chips (§2.3)
@@ -159,6 +159,7 @@ module LogViz
       running_turn      = 0   # cumulative input+output within the current turn
       last_request      = nil # {message_count:, bytes:} of the previous request, for deltas
       pending_request   = nil # {entry:, point:, bytes:, total_bytes:} awaiting this call's response
+      pending_injected  = []  # {name:, compacted:, raw_len:, compacted_len:} since the last request
 
       File.foreach(@path) do |line|
         line = line.strip
@@ -185,6 +186,12 @@ module LogViz
                                      turn: current_turn, iteration: current_iteration)
             end
             pending_user = false
+          end
+
+          if pending_injected.any?
+            @entries << Entry.new(type: :injected, injected_calls: pending_injected,
+                                   turn: current_turn, iteration: current_iteration)
+            pending_injected = []
           end
 
           message_count = event["message_count"].to_i
@@ -294,6 +301,15 @@ module LogViz
                                  tool_result: event["result"], tool_ok: event.fetch("ok", true),
                                  tool_error: event["error"], room_title: room_title,
                                  turn: current_turn, iteration: current_iteration)
+
+          # Older logs predate Logger#tool_result's `compacted:` field —
+          # event["compacted"] is simply absent there, so nothing is
+          # buffered and no :injected panel appears for those sessions.
+          if event["compacted"]
+            pending_injected << { name: name, compacted: event["compacted"],
+                                   raw_len: event["result"].to_s.length,
+                                   compacted_len: event["compacted"].to_s.length }
+          end
         when "turn_end"
           @entries << Entry.new(type: :turn_end, reason: event["reason"],
                                  iterations: event["iterations"], tokens: event["tokens"],

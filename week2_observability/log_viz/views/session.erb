@@ -146,6 +146,19 @@
         <div class="msg-role"><span>User</span></div>
         <div class="msg-body"><%= text_html(entry.text) %></div>
       </div>
+    <% elsif entry.type == :injected %>
+      <div class="injected-panel">
+        <div class="injected-panel-title">&#8628; Injected into next request</div>
+        <% entry.injected_calls.each do |call| %>
+          <div class="injected-call">
+            <div class="injected-call-head">
+              <span class="injected-call-name"><%= call[:name] %></span>
+              <span class="injected-call-delta"><%= fmt_char_delta(call[:raw_len], call[:compacted_len]) %></span>
+            </div>
+            <pre class="injected-call-text"><%= text_html(call[:compacted]) %></pre>
+          </div>
+        <% end %>
+      </div>
     <% elsif entry.type == :request %>
       <details class="request-details">
         <summary>

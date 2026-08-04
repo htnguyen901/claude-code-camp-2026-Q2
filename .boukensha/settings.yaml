@@ -27,6 +27,20 @@ tasks:
     model: gemma4
     # host: http://localhost:11434
 
+  # boukensha's own MUD tool-result compactor (see
+  # docs/plans/token_optimization/mud_response_compaction.md). Tiers 0/1 —
+  # ANSI/prompt-noise stripping and structure-aware trim, keeping room
+  # title/exits/contents verbatim — always run, no config needed. `enabled`
+  # here gates only Tier 2, the opt-in LLM prose rewrite; left off until
+  # its eval (task completion / next-action correctness) confirms it's safe
+  # to default on.
+  compactor:
+    enabled: true
+    provider: ollama
+    model: gemma4
+    # host: http://localhost:11434
+    min_chars: 150
+
 # mud:
 #   host: localhost
 #   port: 4000

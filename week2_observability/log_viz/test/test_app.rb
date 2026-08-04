@@ -89,4 +89,32 @@ class TestApp < Minitest::Test
     assert_equal "application/json", res.content_type
     assert JSON.parse(res.body)["error"]
   end
+
+  # Exercises the real Sinatra route + session.erb rendering (not just
+  # LogViz::Session#entries in isolation) for the "injected into next
+  # request" panel — catches template-level bugs a pure parsing test can't.
+  def test_session_page_renders_the_injected_panel_with_compacted_text
+    path = File.join(@sessions_dir, "s1.jsonl")
+    File.write(path, [
+      event(phase: "session_start", provider: "openai", model: "gpt-5.4-mini", task: "player"),
+      event(phase: "turn", n: 1),
+      event(phase: "iteration", n: 1),
+      event(phase: "tool_call", name: "tbamud__look", args: {}),
+      event(phase: "tool_result", name: "tbamud__look", result: "The full raw room description text.",
+            ok: true, compacted: "Short room summary."),
+      event(phase: "iteration", n: 2),
+      event(phase: "request", iteration: 2, payload: { model: "gpt-5.4-mini", input: [] },
+            message_count: 1, tool_count: 0)
+    ].join("\n") + "\n")
+
+    res = @request.get("/sessions/s1")
+
+    assert_equal 200, res.status
+    assert_includes res.body, "Injected into next request"
+    # The compacted text appears in the new panel; the raw text still
+    # appears too, in the existing (untouched) tool-result block above it —
+    # this feature is purely additive visibility, not a replacement.
+    assert_includes res.body, "Short room summary."
+    assert_includes res.body, "The full raw room description text."
+  end
 end

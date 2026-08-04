@@ -16,6 +16,11 @@ A small Sinatra app that turns `.boukensha/sessions/*.jsonl` logs (written by
   - raw MUD output (including ANSI color codes) is converted to colored HTML
     so room descriptions, exits, and status lines look the way they would in
     a terminal
+  - when `Boukensha::Compactor` (week2_observability/ruby/14_response_compactor)
+    is in play, an **"Injected into next request" panel** right before each
+    request block — the exact post-compaction text about to enter that
+    request's payload, with a char-count delta, so you don't have to expand
+    the request's raw JSON to see what actually got sent
 
 It only reads the `.jsonl` files — nothing is written back.
 
@@ -89,6 +94,14 @@ version string, and `ollama list` should show the pulled model.
   `tool_call` / `tool_result` events into an ordered list of transcript
   entries (`user`, `assistant`, `tool`). Response events are treated as the
   source of truth for task/provider/model/cost so one session can mix models.
+  A `tool_result` event's optional `compacted` field (written by
+  `Boukensha::Logger#tool_result` alongside the always-raw `result` field —
+  see week2_observability/ruby/14_response_compactor/lib/boukensha/
+  compactor.rb) is buffered across however many tool calls happen in one
+  iteration and flushed into a single `injected` entry right before the
+  `request` entry that follows — that's the "Injected into next request"
+  panel. Older logs with no `compacted` field simply produce no `injected`
+  entries; nothing else about the transcript changes.
 - `lib/log_viz/ansi.rb` — converts ANSI SGR escape codes in tool results into
   `<span>` elements styled via `public/style.css`.
 - `lib/log_viz/world_map.rb` — the cross-session accumulated world model

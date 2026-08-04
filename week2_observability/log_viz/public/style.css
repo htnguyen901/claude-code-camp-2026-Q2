@@ -11,6 +11,8 @@
   --assistant-bg: #f4f6f9;
   --tool-bg: #fff7d6;
   --tool-border: #e3cf6a;
+  --injected-bg: #eafaf1;
+  --injected-border: #7cc9a0;
   /* Token-composition colors — single source for the per-request bar
      segments, the session-wide composition chart's lines, and both charts'
      legend swatches, so "orange always means tools" everywhere. */
@@ -561,6 +563,62 @@ table.sessions a:hover {
 }
 
 .tool-result {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+/* "Injected into next request" panel — sits between a batch of tool results
+   and the request that follows them, showing exactly what post-compaction
+   text is about to enter that request's payload, without needing to expand
+   the request's full JSON to find it. */
+.injected-panel {
+  border: 1px solid var(--injected-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.injected-panel-title {
+  background: var(--injected-bg);
+  padding: 0.4rem 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #1e7e34;
+  border-bottom: 1px solid var(--injected-border);
+}
+
+.injected-call + .injected-call {
+  border-top: 1px solid var(--injected-border);
+}
+
+.injected-call-head {
+  background: var(--injected-bg);
+  padding: 0.4rem 1rem;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.injected-call-name {
+  font-weight: 600;
+}
+
+.injected-call-delta {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.injected-call-text {
   margin: 0;
   padding: 0.75rem 1rem;
   background: #1e1e1e;

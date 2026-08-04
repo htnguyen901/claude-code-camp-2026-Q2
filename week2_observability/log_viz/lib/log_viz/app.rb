@@ -220,6 +220,21 @@ module LogViz
         format("%.1fkb", n / 1024.0)
       end
 
+      # Char-count delta chip for the "injected into next request" panel — a
+      # quick "did compaction actually shrink this" signal without diffing
+      # the raw/compacted text by eye. Growth (compacted longer than raw,
+      # possible if a Tier 2 model rewrite pads instead of trims) renders as
+      # a "+" delta rather than a nonsensical negative shrink.
+      def fmt_char_delta(raw_len, compacted_len)
+        raw_len       = raw_len.to_i
+        compacted_len = compacted_len.to_i
+        return "#{compacted_len} chars &middot; unchanged" if raw_len == compacted_len
+
+        delta_pct = raw_len.positive? ? ((raw_len - compacted_len).to_f / raw_len * 100).round : 0
+        sign      = delta_pct.negative? ? "+" : "-"
+        "#{raw_len} &rarr; #{compacted_len} chars (#{sign}#{delta_pct.abs}%)"
+      end
+
       # Signed delta for the request-growth chip, e.g. "+2" / "-1" / "&plusmn;0".
       def fmt_delta(n)
         return nil if n.nil?
