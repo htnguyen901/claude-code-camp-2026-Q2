@@ -102,6 +102,114 @@
   </div>
 <% end %>
 
+<% if @visits && @visits.any? %>
+  <!--
+    Time-lapse path panel (docs/plans/observability/players/
+    multiple_concurrent_players.md §4) — an overview node-link graph scoped
+    to this session's own visits (map_svg's session_id: filter), plus the
+    ordered visit list driving a small step-through scrubber. Everything the
+    script needs (each row's room title, via data-room) is already in the
+    rendered markup, so there's no inline JSON to embed and no new endpoint
+    to poll — this is historical replay of one already-finished (or still
+    live) session's data, not a live feed. Degrades with no JS to: the plain
+    ordered list below, just without the animated highlight/scrubber.
+  -->
+  <div class="breakdown time-lapse-panel">
+    <div class="breakdown-title">Path taken this session</div>
+    <div class="time-lapse-layout">
+      <div class="map-zoom-root">
+        <div class="time-lapse-map">
+          <%= map_svg(@world_map, session_id: @session.id) %>
+        </div>
+      </div>
+      <div class="time-lapse-detail">
+        <div class="time-lapse-controls">
+          <button type="button" id="tl-prev" class="tl-btn">&larr; Prev</button>
+          <button type="button" id="tl-play" class="tl-btn">&#9654; Play</button>
+          <button type="button" id="tl-next" class="tl-btn">Next &rarr;</button>
+          <input type="range" id="tl-slider" min="0" max="<%= @visits.length - 1 %>" value="0">
+          <span id="tl-position" class="nowrap">1 / <%= @visits.length %></span>
+        </div>
+        <ol id="tl-list" class="time-lapse-list">
+          <% @visits.each_with_index do |v, i| %>
+            <li data-index="<%= i %>" data-room="<%= attr_html(v[:room_title]) %>">
+              <span class="tl-seq"><%= i + 1 %></span>
+              <span class="tl-room"><%= text_html(v[:room_title]) %></span>
+              <span class="tl-meta">
+                turn <%= v[:turn] %>, iter <%= v[:iteration] %><% if v[:arrived_via] %> &middot; via <%= text_html(v[:arrived_via]) %><% end %>
+              </span>
+              <span class="tl-time nowrap"><%= format_time(v[:at]) %></span>
+            </li>
+          <% end %>
+        </ol>
+      </div>
+    </div>
+  </div>
+  <%= erb :_map_drag, layout: false %>
+  <%= erb :_map_zoom, layout: false %>
+  <script>
+    (function () {
+      var items = Array.prototype.slice.call(document.querySelectorAll("#tl-list li"));
+      if (!items.length) return;
+
+      var slider   = document.getElementById("tl-slider");
+      var position = document.getElementById("tl-position");
+      var prevBtn  = document.getElementById("tl-prev");
+      var nextBtn  = document.getElementById("tl-next");
+      var playBtn  = document.getElementById("tl-play");
+      var mapEl    = document.querySelector(".time-lapse-map .map-svg-session");
+      var playing  = null;
+      var idx      = 0;
+
+      function nodeFor(room) {
+        return mapEl ? mapEl.querySelector('.map-node[data-room="' + CSS.escape(room) + '"]') : null;
+      }
+
+      function stop() {
+        if (!playing) return;
+        clearInterval(playing);
+        playing = null;
+        playBtn.textContent = "▶ Play";
+      }
+
+      function show(i) {
+        idx = Math.max(0, Math.min(items.length - 1, i));
+        items.forEach(function (li, j) { li.classList.toggle("tl-active", j === idx); });
+        items[idx].scrollIntoView({ block: "nearest" });
+
+        if (mapEl) {
+          var active = mapEl.querySelectorAll(".map-node.active");
+          active.forEach ? active.forEach(function (n) { n.classList.remove("active"); })
+                          : Array.prototype.forEach.call(active, function (n) { n.classList.remove("active"); });
+          var node = nodeFor(items[idx].getAttribute("data-room"));
+          if (node) node.classList.add("active");
+        }
+
+        slider.value = idx;
+        position.textContent = (idx + 1) + " / " + items.length;
+      }
+
+      items.forEach(function (li, i) {
+        li.addEventListener("click", function () { stop(); show(i); });
+      });
+      prevBtn.addEventListener("click", function () { stop(); show(idx - 1); });
+      nextBtn.addEventListener("click", function () { stop(); show(idx + 1); });
+      slider.addEventListener("input", function () { stop(); show(parseInt(slider.value, 10)); });
+
+      playBtn.addEventListener("click", function () {
+        if (playing) { stop(); return; }
+        playBtn.textContent = "⏸ Pause";
+        playing = setInterval(function () {
+          if (idx >= items.length - 1) { stop(); return; }
+          show(idx + 1);
+        }, 900);
+      });
+
+      show(0);
+    })();
+  </script>
+<% end %>
+
 <% if @session.usage_series.length > 1 %>
   <div class="spark-wrap">
     <div class="spark-label">input tokens / iteration &middot; peak <%= fmt_tokens(@session.peak_input_tokens) %></div>

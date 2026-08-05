@@ -28,6 +28,33 @@ A small Sinatra app that turns `.boukensha/sessions/*.jsonl` logs (written by
     merged pipeline (see `docs/plans/observability/otel_and_logs/00_overview.md`).
     Older sessions, or any turn logged with `observability.enabled: false`,
     simply render with no link — no error.
+- **`/map`** — the accumulated World Map: every room ever visited across
+  every session, rendered as a zoomable, scrollable, drag-to-pannable
+  node-link graph (`+`/`-`/Reset controls or ctrl/cmd+scroll-wheel to zoom,
+  click-and-drag to pan, click a room for an inline detail panel), plus an
+  always-visible in-map search box that highlights matching rooms without
+  reloading. A visited room's exits that haven't been stepped through yet
+  render as small dashed "?" stubs, so a known-but-unexplored path is
+  visible without implying it's been discovered. Also shows who's playing
+  right now (live session markers on the map, a live-sessions table that
+  polls without a full page reload).
+- **`/map/rooms`**, **`/map/discoveries`** — the Rooms and Discoveries
+  tables live on their own pages (split out of `/map` to keep the map
+  itself uncluttered), each with reactive, debounced search/filter and
+  keyset pagination — typing updates the results without a page reload; a
+  plain form submit is the no-JS fallback.
+- **`/players`**, **`/players/:name`** — the player roster and one
+  character's detail page (session list, cost/token totals, a "rooms/
+  discoveries discovered vs. discoverable" KPI against the global map).
+  `/players/:name` also has a **Knowledge** section: the same zoomable/
+  searchable map, plus Rooms/Discoveries pages, but scoped to only what
+  that player's own sessions have actually visited (`/players/:name/rooms`,
+  `/players/:name/discoveries`) — an isolated view of one character's
+  explored subgraph, not the engineer-facing "everyone's discoveries" view
+  `/map` gives. The Sessions table also carries a small per-row path glyph
+  (dots in visit order, one per room, no room names) as a glanceable
+  preview of that session's route — click through to `/sessions/:id`'s full
+  interactive time-lapse replay for the real thing.
 
 It only reads the `.jsonl` files — nothing is written back.
 
@@ -145,7 +172,22 @@ version string, and `ollama list` should show the pulled model.
   bare subject strings — the point being that an examine reply can hold a
   real gameplay clue (an NPC's dialogue, an item's fine print) worth
   recalling later without spending another turn re-examining it.
-- `lib/log_viz/app.rb` — the Sinatra app and view helpers, including `/map`'s
-  search/filter/pagination query params and the `/map/live.json` polling
-  endpoint the map page uses for live updates without a full reload.
-- `views/` — ERB templates for the session list, transcript, and map pages.
+- `lib/log_viz/app.rb` — the Sinatra app and view helpers. `map_svg` renders
+  the node-link graph in three scopes (full map, one `session_id:`'s actual
+  path, one `player:`'s visited-rooms subgraph) and synthesizes the
+  unexplored-exit stubs at render time — nothing about "unexplored" is ever
+  written to the database, it's recomputed from each visited room's parsed
+  `exits` on every render. `/map/rooms`, `/map/discoveries`,
+  `/players/:name/rooms`, `/players/:name/discoveries` share the same
+  `rooms.erb`/`discoveries.erb` templates as their global counterparts, just
+  with results scoped via `WorldMap#rooms_matching`/`#discoveries`'
+  `room_titles:` allowlist param. `session_path_glyph` renders the compact
+  per-session route preview on `/players/:name`.
+- `views/` — ERB templates for the session list, transcript, map, and
+  player/knowledge pages, plus two shared script-only partials:
+  `_map_zoom.erb` (zoom controls — `+`/`-`/Reset buttons and ctrl/cmd+wheel,
+  via a CSS `transform: scale()` on the map SVG, layered on top of the
+  existing native scroll/drag-to-pan) and `_map_search.erb` (`/map`'s
+  in-map, client-side, reactive-to-keystroke room search). Both are pure
+  progressive enhancement — a page with JS disabled renders and works
+  exactly as it did before either existed.

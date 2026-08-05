@@ -1,0 +1,17 @@
+source "https://rubygems.org"
+
+gem "dotenv"
+gem "charm"
+
+# OpenTelemetry — see lib/boukensha/telemetry.rb and
+# docs/plans/observability/otel_and_logs/phase1_ruby_sdk.md. Metrics gems are
+# still pre-1.0/experimental (opposite of the stable traces SDK) — kept
+# separate so a metrics-gem issue never blocks tracing, per the plan's risk
+# note.
+gem "opentelemetry-api", "~> 1.11"
+gem "opentelemetry-sdk", "~> 1.13"
+gem "opentelemetry-exporter-otlp", "~> 0.34"
+gem "opentelemetry-metrics-sdk", "~> 0.15"
+gem "opentelemetry-exporter-otlp-metrics", "~> 0.10"
+
+gemspec

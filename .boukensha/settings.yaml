@@ -71,6 +71,17 @@ mcp_servers:
   # for the agent not knowing what a MUD is. `mud-manager` is installed on
   # PATH (the mud_manager gem), so we call it directly instead.
   # This entry is `required` (the default), so a bad path fails loudly at boot.
+  #
+  # MUD_NAME/MUD_PASSWORD are intentionally blank — a static default
+  # character here is exactly what made running two players at once
+  # impossible (docs/plans/observability/players/
+  # multiple_concurrent_players.md). Run `boukensha --player NAME` to log in
+  # as one of .boukensha/players/*.yaml; Boukensha.overlay_player_credentials
+  # fills these two keys in at boot from that profile. The keys stay present
+  # (empty) rather than being deleted outright because the overlay only ever
+  # mutates a key that's already declared here — never invents a new one.
+  # Omitting --player now prints a notice and runs with no MUD identity,
+  # which will fail to log in rather than silently reusing a shared default.
   mud:
     command: mud-manager
     args:    [--mcp]
@@ -78,8 +89,8 @@ mcp_servers:
     env:
       MUD_HOST:     localhost
       MUD_PORT:     4000
-      MUD_NAME:     dummy
-      MUD_PASSWORD: helloworld
+      MUD_NAME:
+      MUD_PASSWORD:
 
     filesystem:
       command:  npx

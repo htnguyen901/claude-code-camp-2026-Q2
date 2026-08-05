@@ -664,4 +664,178 @@ class TestWorldMap < Minitest::Test
     assert_equal ["The Temple Square"], wm.rooms_matching(q: "temple").map { |r| r[:title] }
     assert_equal 2, wm.rooms_matching.length
   end
+
+  # ---------- room_titles: allowlist (world_map_enhancer.md §5) ------------
+
+  def test_rooms_matching_scopes_to_a_room_titles_allowlist
+    path = File.join(@sessions_dir, "s1.jsonl")
+    write_lines(path, [
+      *move_lines(direction: "north", title: "The Temple Square", exits: %w[s]),
+      *move_lines(direction: "east", title: "Dark Alley", exits: %w[w])
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    assert_equal ["The Temple Square"], wm.rooms_matching(room_titles: ["The Temple Square"]).map { |r| r[:title] }
+    assert_equal [], wm.rooms_matching(room_titles: [])
+    assert_equal 2, wm.rooms_matching(room_titles: nil).length, "nil allowlist is a no-op, same as today's unfiltered behavior"
+  end
+
+  def test_discoveries_scopes_to_a_room_titles_allowlist
+    path = File.join(@sessions_dir, "s1.jsonl")
+    write_lines(path, [
+      *move_lines(direction: "north", title: "Room A", exits: %w[s], contents: ["A rusty lever is here."]),
+      *move_lines(direction: "east", title: "Room B", exits: %w[w], contents: ["A silver key is here."])
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    assert_equal ["A rusty lever is here."], wm.discoveries(room_titles: ["Room A"]).map { |d| d[:content] }
+    assert_equal [], wm.discoveries(room_titles: [])
+    assert_equal 2, wm.discoveries(room_titles: nil).length
+  end
+
+  # ---------- per-player scoping (multiple_concurrent_players.md §2/§3) ----------
+
+  def test_session_start_stores_the_player_field
+    path = File.join(@sessions_dir, "noir-s1.jsonl")
+    write_lines(path, [
+      event(phase: "session_start", provider: "anthropic", model: "claude-haiku-4-5", task: "player", player: "noir"),
+      *move_lines(direction: "north", title: "Room A", exits: %w[s])
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    assert_equal "noir", wm.sessions.first[:player]
+  end
+
+  def test_session_start_without_a_player_field_stays_untagged
+    path = File.join(@sessions_dir, "s1.jsonl")
+    write_lines(path, [
+      event(phase: "session_start", provider: "anthropic", model: "claude-haiku-4-5", task: "player"),
+      *move_lines(direction: "north", title: "Room A", exits: %w[s])
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    assert_nil wm.sessions.first[:player]
+  end
+
+  def test_rooms_visited_by_scopes_to_one_players_own_sessions
+    write_lines(File.join(@sessions_dir, "noir-s1.jsonl"), [
+      event(phase: "session_start", player: "noir"),
+      *move_lines(direction: "north", title: "Room A", exits: %w[s])
+    ])
+    write_lines(File.join(@sessions_dir, "dina-s1.jsonl"), [
+      event(phase: "session_start", player: "dina"),
+      *move_lines(direction: "east", title: "Room B", exits: %w[w])
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    assert_equal ["Room A"], wm.rooms_visited_by("noir")
+    assert_equal ["Room B"], wm.rooms_visited_by("dina")
+    assert_equal [], wm.rooms_visited_by("nobody")
+  end
+
+  def test_players_returns_one_row_per_distinct_player_with_aggregates
+    write_lines(File.join(@sessions_dir, "noir-s1.jsonl"), [
+      event(phase: "session_start", player: "noir"),
+      event(phase: "turn", n: 1),
+      event(phase: "iteration", n: 1),
+      *move_lines(direction: "north", title: "Room A", exits: %w[s], at: "2026-01-01T00:00:00Z")
+    ])
+    # An untagged session must never show up in the player roster.
+    write_lines(File.join(@sessions_dir, "s1.jsonl"), move_lines(direction: "east", title: "Room B", exits: %w[w]))
+
+    wm = build_map
+    wm.refresh!
+
+    rows = wm.players
+    assert_equal 1, rows.length
+    row = rows.first
+    assert_equal "noir", row[:player]
+    assert_equal 1, row[:session_count]
+    assert_equal 1, row[:total_turns]
+    assert_equal 1, row[:total_iterations]
+    refute row[:live], "the only recorded activity is a fixed 2026-01-01 timestamp, well outside LIVE_WINDOW_SECONDS"
+  end
+
+  def test_players_marks_a_recently_active_session_as_live_with_its_current_room
+    write_lines(File.join(@sessions_dir, "noir-s1.jsonl"), [
+      event(phase: "session_start", player: "noir"),
+      *move_lines(direction: "north", title: "Room A", exits: %w[s])
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    row = wm.players.find { |p| p[:player] == "noir" }
+    assert row[:live]
+    assert_equal "Room A", row[:current_room]
+  end
+
+  def test_player_summary_reports_discovered_vs_discoverable_against_the_global_map
+    write_lines(File.join(@sessions_dir, "noir-s1.jsonl"), [
+      event(phase: "session_start", player: "noir"),
+      *move_lines(direction: "north", title: "Room A", exits: %w[s], contents: ["A rusty lever is here."])
+    ])
+    # Dina discovers a second room noir has never been to — part of the
+    # global map, but not part of noir's own journey.
+    write_lines(File.join(@sessions_dir, "dina-s1.jsonl"), [
+      event(phase: "session_start", player: "dina"),
+      *move_lines(direction: "east", title: "Room B", exits: %w[w], contents: ["A silver key is here."])
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    extractor = ->(raw) { { subject: raw.include?("lever") ? "lever" : "key", kind: "item", clause: nil, source: "llm" } }
+    wm.instance_variable_get(:@db).tap do |db|
+      wm.send(:store_content_fact, db, "A rusty lever is here.", extractor.call("A rusty lever is here."))
+      wm.send(:store_content_fact, db, "A silver key is here.", extractor.call("A silver key is here."))
+    end
+
+    summary = wm.player_summary("noir")
+
+    assert_equal 1, summary[:sessions].length
+    assert_equal 1, summary[:rooms_discovered]
+    assert_equal 2, summary[:rooms_discoverable], "both noir's and dina's rooms are part of the global map"
+    assert_equal 1, summary[:subjects_discovered]
+    assert_equal 2, summary[:subjects_discoverable]
+  end
+
+  def test_migrates_an_existing_database_missing_the_player_column
+    db = SQLite3::Database.new(@db_path)
+    db.execute_batch(<<~SQL)
+      CREATE TABLE sessions (
+        session_id TEXT PRIMARY KEY, path TEXT,
+        task TEXT, provider TEXT, model TEXT, started_at TEXT,
+        last_room TEXT, last_seen_at TEXT,
+        turn INTEGER NOT NULL DEFAULT 0, iteration INTEGER NOT NULL DEFAULT 0
+      );
+    SQL
+    db.execute("INSERT INTO sessions(session_id, path) VALUES (?, ?)", ["legacy-session", "/tmp/legacy-session.jsonl"])
+    db.close
+
+    wm = build_map
+    legacy = wm.sessions.find { |s| s[:session_id] == "legacy-session" }
+    refute_nil legacy
+    assert_nil legacy[:player], "a pre-migration row comes back player: NULL, not an error"
+
+    # Ingestion after the migration still tags newly-seen sessions correctly.
+    write_lines(File.join(@sessions_dir, "noir-s1.jsonl"), [
+      event(phase: "session_start", player: "noir"),
+      *move_lines(direction: "north", title: "Room A", exits: %w[s])
+    ])
+    wm.refresh!
+
+    tagged = wm.sessions.find { |s| s[:session_id] == "noir-s1" }
+    assert_equal "noir", tagged[:player]
+  end
 end

@@ -4,6 +4,7 @@
 <p class="meta">
   Accumulated across every session ever logged &mdash; <span id="map-room-count"><%= @world_map.rooms.length %></span> room<%= "s" unless @world_map.rooms.length == 1 %> discovered,
   <%= @world_map.edges.length %> known connection<%= "s" unless @world_map.edges.length == 1 %>.
+  Nodes shown are rooms this world map has actually recorded a visit to; dashed "?" markers are exits a visited room lists that haven't been stepped through yet.
 </p>
 
 <div id="map-live-banner">
@@ -16,15 +17,25 @@
   <p class="empty">No rooms discovered yet &mdash; play a session that calls <code>look</code>/<code>move</code> to populate the map.</p>
 <% else %>
   <div class="map-layout">
-    <div class="map-scroll">
-      <%= map_svg(@world_map) %>
+    <div class="map-zoom-root">
+      <div class="map-scroll">
+        <%= map_svg(@world_map) %>
+      </div>
     </div>
     <div id="room-detail-panel" class="room-detail-panel" hidden>
       <button type="button" id="room-detail-close" class="room-detail-close" aria-label="Close room details">&times;</button>
       <div id="room-detail-body"></div>
     </div>
   </div>
+  <%= erb :_map_drag, layout: false %>
+  <%= erb :_map_zoom, layout: false %>
+  <%= erb :_map_search, layout: false %>
 <% end %>
+
+<div class="map-links">
+  <a href="/map/rooms"><%= @world_map.rooms.length %> room<%= "s" unless @world_map.rooms.length == 1 %> discovered &rarr;</a>
+  <a href="/map/discoveries"><%= @discoveries_count %> discover<%= @discoveries_count == 1 ? "y" : "ies" %> &rarr;</a>
+</div>
 
 <div class="breakdown">
   <div class="breakdown-title">Agents playing right now</div>
@@ -58,149 +69,34 @@
   </div>
 </div>
 
-<div class="breakdown">
-  <div class="breakdown-title">Discoveries &mdash; items/mobs/NPCs noticed in room text</div>
-
-  <form class="map-filter-form" method="get" action="/map">
-    <input type="text" name="q" placeholder="search subject or text&hellip;" value="<%= @q %>">
-    <select name="kind">
-      <option value="">any kind</option>
-      <% @kinds.each do |k| %>
-        <option value="<%= k %>" <%= "selected" if @kind == k %>><%= k %></option>
-      <% end %>
-    </select>
-    <select name="room">
-      <option value="">any room</option>
-      <% @room_titles.each do |title| %>
-        <option value="<%= title %>" <%= "selected" if @room == title %>><%= title %></option>
-      <% end %>
-    </select>
-    <select name="examined">
-      <option value="">examined or not</option>
-      <option value="1" <%= "selected" if @examined == true %>>examined only</option>
-      <option value="0" <%= "selected" if @examined == false %>>unexamined only</option>
-    </select>
-    <button type="submit">Filter</button>
-    <% if @q.to_s != "" || @kind.to_s != "" || @room.to_s != "" || !@examined.nil? %>
-      <a href="/map" class="map-filter-clear">Clear</a>
-    <% end %>
-  </form>
-
-  <% if @discoveries.empty? %>
-    <p class="empty">Nothing matches &mdash; try clearing the filter.</p>
-  <% else %>
-    <table class="breakdown-table">
-      <thead>
-        <tr>
-          <th>Subject</th>
-          <th>Kind</th>
-          <th>Examined</th>
-          <th>Findings</th>
-          <th>Noticed (raw text)</th>
-          <th>Room(s)</th>
-          <th class="nowrap">First seen</th>
-        </tr>
-      </thead>
-      <tbody>
-        <% @discoveries.each do |d| %>
-          <tr>
-            <td><%= text_html(d[:subject] || d[:content]) %></td>
-            <td><span class="kind-badge kind-<%= d[:kind] %>"><%= d[:kind] %></span></td>
-            <td>
-              <% if d[:examined] %>
-                <span class="examined-badge examined-yes">&check; examined</span>
-              <% else %>
-                <span class="examined-badge examined-no">not yet</span>
-              <% end %>
-            </td>
-            <td class="discovery-findings">
-              <% if d[:examination_result].to_s.strip != "" %>
-                <%= text_html(truncate(d[:examination_result], 140)) %>
-              <% else %>
-                <span class="muted">&mdash;</span>
-              <% end %>
-            </td>
-            <td><%= text_html(d[:content]) %></td>
-            <td><%= d[:rooms].join(", ") %></td>
-            <td class="nowrap"><%= format_time(d[:first_seen_at]) %></td>
-          </tr>
-        <% end %>
-      </tbody>
-    </table>
-    <% if @next_before %>
-      <div class="map-pagination">
-        <a href="/map?<%= build_query(q: @q, kind: @kind, room: @room, examined: params[:examined], before: @next_before, room_q: @room_q, rooms_before: @rooms_before) %>">Older discoveries &rarr;</a>
-      </div>
-    <% end %>
-  <% end %>
-</div>
-
-<div class="breakdown">
-  <div class="breakdown-title">Rooms</div>
-
-  <form class="map-filter-form" method="get" action="/map">
-    <input type="hidden" name="q" value="<%= @q %>">
-    <input type="hidden" name="kind" value="<%= @kind %>">
-    <input type="hidden" name="room" value="<%= @room %>">
-    <input type="hidden" name="examined" value="<%= params[:examined] %>">
-    <input type="text" name="room_q" placeholder="search room title/description&hellip;" value="<%= @room_q %>">
-    <button type="submit">Filter</button>
-    <% if @room_q.to_s != "" %>
-      <a href="/map?<%= build_query(q: @q, kind: @kind, room: @room, examined: params[:examined]) %>" class="map-filter-clear">Clear</a>
-    <% end %>
-  </form>
-
-  <table class="breakdown-table">
-    <thead>
-      <tr>
-        <th>Room</th>
-        <th>Exits</th>
-        <th class="nowrap">Visited</th>
-        <th class="nowrap">First seen</th>
-      </tr>
-    </thead>
-    <tbody>
-      <% @rooms.each do |r| %>
-        <tr>
-          <td><%= text_html(r[:title]) %></td>
-          <td><%= r[:exits].join(" ") %></td>
-          <td class="nowrap"><%= r[:visit_count] %>&times;</td>
-          <td class="nowrap"><%= format_time(r[:first_seen][:at]) %></td>
-        </tr>
-      <% end %>
-    </tbody>
-  </table>
-  <% if @next_rooms_before %>
-    <div class="map-pagination">
-      <a href="/map?<%= build_query(q: @q, kind: @kind, room: @room, examined: params[:examined], room_q: @room_q, rooms_before: @next_rooms_before) %>">Older rooms &rarr;</a>
-    </div>
-  <% end %>
-</div>
-
-<meta http-equiv="refresh" content="15" id="map-meta-refresh">
+<noscript><meta http-equiv="refresh" content="15"></noscript>
 
 <!--
   Small, plain, no-framework script (room_world_inspector.md §5,
   world_map_visualization.md §2/§3) — a deliberate, narrow departure from
-  this project's otherwise plain-ERB/no-JS house style. Three independent
-  pieces, all with a working non-JS fallback:
+  this project's otherwise plain-ERB/no-JS house style. Two independent
+  pieces, both with a working non-JS fallback (drag-to-pan lives in the
+  shared _map_drag.erb partial rendered above — world_map_enhancer.md §7):
   1. Live-update poller: polls /map/live.json every few seconds and
      patches only the live-session table/banner and a "N new since last
-     check" counter; never touches the filtered/paginated tables above (a
-     full re-fetch of those belongs to the user clicking, not a timer).
-     Falls back to the <meta refresh> above if JS is disabled.
-  2. Drag-to-pan on the map canvas: layered on top of native scrolling
-     (.map-scroll's `overflow: auto`), never a replacement for it.
-  3. Click-to-inspect: intercepts a click on a room box and fetches
+     check" counter (pointing at the Rooms/Discoveries pages, since those
+     tables no longer live on this page — world_map_enhancer.md §4); never
+     touches the map SVG itself (a full re-fetch of that belongs to the
+     user clicking, not a timer). Falls back to the <noscript>-wrapped
+     <meta refresh> above when JS is disabled — a browser commits to an
+     http-equiv="refresh" timer at *parse* time, so it must never be
+     present in markup a running script would otherwise have to race to
+     remove; <noscript> means the browser only ever parses it when there's
+     no script to remove it in the first place, which is what actually
+     fixes the "page keeps resetting my scroll/open panel every ~15s" bug
+     DOM-removal couldn't reliably fix.
+  2. Click-to-inspect: intercepts a click on a room box and fetches
      /map/rooms/:title.json into an inline panel instead of following the
      box's <a href="/map?room=..."> — which is itself the fallback if the
      fetch fails or JS never ran.
 -->
 <script>
   (function () {
-    var metaRefresh = document.getElementById("map-meta-refresh");
-    if (metaRefresh) metaRefresh.remove(); // JS is running — no need for a full reload
-
     var since = new Date().toISOString();
     var pollMs = 5000;
 
@@ -243,11 +139,10 @@
         if (existing) existing.remove();
         return;
       }
-      var text = [];
-      if (newRooms) text.push(newRooms + " new room" + (newRooms !== 1 ? "s" : ""));
-      if (newDiscoveries) text.push(newDiscoveries + " new discover" + (newDiscoveries !== 1 ? "ies" : "y"));
-      var html = '<div class="banner banner-warn">' + text.join(", ") +
-        ' since you loaded this page — <a href="/map">refresh to see them</a></div>';
+      var parts = [];
+      if (newRooms) parts.push(newRooms + " new room" + (newRooms !== 1 ? "s" : "") + ' (<a href="/map/rooms">view</a>)');
+      if (newDiscoveries) parts.push(newDiscoveries + " new discover" + (newDiscoveries !== 1 ? "ies" : "y") + ' (<a href="/map/discoveries">view</a>)');
+      var html = '<div class="banner banner-warn">' + parts.join(", ") + " since you loaded this page</div>";
       if (existing) {
         existing.outerHTML = html.replace("<div", '<div id="map-new-since-banner"');
       } else {
@@ -270,50 +165,18 @@
 
     setTimeout(poll, pollMs);
 
-    // ---- 2. Drag-to-pan + 3. click-to-inspect (world_map_visualization.md §2/§3) ----
+    // ---- 2. Click-to-inspect (world_map_visualization.md §3) ----
+    // Drag-to-pan is handled by the shared _map_drag.erb partial (rendered
+    // above, world_map_enhancer.md §7) — its click listener registers on
+    // .map-scroll first and swallows the click that follows a real drag,
+    // so this handler only ever sees genuine clicks and doesn't need its
+    // own drag-state tracking.
     var mapScroll = document.querySelector(".map-scroll");
     var detailPanel = document.getElementById("room-detail-panel");
     var detailBody = document.getElementById("room-detail-body");
     var detailClose = document.getElementById("room-detail-close");
 
     if (mapScroll && detailPanel) {
-      var DRAG_THRESHOLD_PX = 4;
-      var dragState = null; // { startX, startY, startScrollLeft, startScrollTop, moved }
-
-      function onMouseMove(e) {
-        if (!dragState) return;
-        var dx = e.clientX - dragState.startX;
-        var dy = e.clientY - dragState.startY;
-        if (!dragState.moved && (Math.abs(dx) > DRAG_THRESHOLD_PX || Math.abs(dy) > DRAG_THRESHOLD_PX)) {
-          dragState.moved = true;
-          mapScroll.classList.add("dragging");
-        }
-        if (dragState.moved) {
-          mapScroll.scrollLeft = dragState.startScrollLeft - dx;
-          mapScroll.scrollTop = dragState.startScrollTop - dy;
-        }
-      }
-
-      function onMouseUp() {
-        document.removeEventListener("mousemove", onMouseMove);
-        document.removeEventListener("mouseup", onMouseUp);
-        mapScroll.classList.remove("dragging");
-        // dragState (and its `moved` flag) is read by the click handler
-        // below, which fires right after mouseup — cleared there, not here.
-      }
-
-      mapScroll.addEventListener("mousedown", function (e) {
-        if (e.button !== 0) return; // left-click/primary touch only
-
-        dragState = {
-          startX: e.clientX, startY: e.clientY,
-          startScrollLeft: mapScroll.scrollLeft, startScrollTop: mapScroll.scrollTop,
-          moved: false
-        };
-        document.addEventListener("mousemove", onMouseMove);
-        document.addEventListener("mouseup", onMouseUp);
-      });
-
       function renderRoomDetail(data) {
         var exits = (data.exits || []).join(" ") || "—";
         var discoveryItems = (data.discoveries || []).map(function (d) {
@@ -351,10 +214,6 @@
       }
 
       mapScroll.addEventListener("click", function (e) {
-        var wasDrag = dragState && dragState.moved;
-        dragState = null;
-        if (wasDrag) { e.preventDefault(); return; }
-
         var link = e.target.closest(".map-node-link");
         if (!link) return;
 

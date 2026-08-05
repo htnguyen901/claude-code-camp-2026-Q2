@@ -368,6 +368,40 @@ module LogViz
         SVG
       end
 
+      # Compact per-session path glyph for the /players/:name Sessions table
+      # (world_map_enhancer.md §5) — "speed up progression of the path...
+      # display room as node, no room name required." Deliberately not a
+      # scaled-down `map_svg`: no boxes, no labels, no pan/zoom, just one
+      # dot per visit in order, evenly spaced left-to-right and connected by
+      # a line, same family as `sparkline`/`request_sparkline` above. A
+      # revisited room reuses the same dot color (cycled from
+      # `LIVE_MARKER_COLORS`) so a there-and-back-again pattern is visible
+      # at a glance; the room's name is still available via each dot's
+      # `<title>` tooltip. Clicking the glyph (handled by the caller, not
+      # this helper) goes to the full interactive time-lapse on
+      # /sessions/:id — this is a preview, not a replacement for it.
+      def session_path_glyph(visits, width: 160, height: 28)
+        return "" if visits.empty?
+
+        step = visits.length > 1 ? width.to_f / (visits.length - 1) : 0
+        y = (height / 2.0).round(1)
+        distinct = visits.map { |v| v[:room_title] }.uniq
+
+        coords = visits.each_index.map { |i| "#{(i * step).round(1)},#{y}" }.join(" ")
+        dots = visits.each_with_index.map do |v, i|
+          x = (i * step).round(1)
+          color = LIVE_MARKER_COLORS[distinct.index(v[:room_title]) % LIVE_MARKER_COLORS.length]
+          %(<circle class="path-glyph-dot" cx="#{x}" cy="#{y}" r="3" style="fill: #{color}"><title>#{text_html(v[:room_title])}</title></circle>)
+        end.join
+
+        <<~SVG
+          <svg class="path-glyph" viewBox="0 0 #{width} #{height}" width="#{width}" height="#{height}" role="img" aria-label="rooms visited this session, in order">
+            <polyline class="path-glyph-line" points="#{coords}"/>
+            #{dots}
+          </svg>
+        SVG
+      end
+
       # Inline location tag on a session-page tool entry (player_journey_map
       # .md §3/§4) — a simple "reached this room" marker, not a new/revisit
       # distinction (that needs the cross-session history only WorldMap has,
@@ -479,8 +513,53 @@ module LogViz
         end
       end
 
-      def map_svg(world_map, cell: 160, margin: 90)
-        rooms = world_map.rooms.select { |r| r[:coord] }
+      # Room `exits` (RoomEcho.parse) are single-letter abbreviations as
+      # printed by the MUD ("[ Exits: n s e ]"), but `WorldMap::
+      # DIRECTION_DELTA` is keyed by the full compass words a `move` tool
+      # call's `direction` arg actually uses ("north") — this is the
+      # translation between the two vocabularies, needed only for the
+      # unexplored-neighbor stub synthesis below (map_svg never otherwise
+      # reads `exits` for real placement; `WorldMap#assign_coordinate`
+      # already gets full words directly from the tool call).
+      EXIT_DIRECTION_WORDS = {
+        "n" => "north", "s" => "south", "e" => "east", "w" => "west",
+        "u" => "up", "d" => "down"
+      }.freeze
+
+      MAP_NODE_UNEXPLORED_R = 14
+
+      # session_id: nil (default, and mutually exclusive with player:) draws
+      # the full accumulated map. A session_id restricts nodes to only the
+      # rooms that one session's own `visits` reached, and derives edges
+      # from that session's actual room-to-room transitions (in visit
+      # order) instead of the global, cross-session `edges` table — two
+      # sessions can share a global edge without either having *personally*
+      # taken it in this order, which would misrepresent "this session's
+      # own path" (see docs/plans/observability/players/
+      # multiple_concurrent_players.md §4's per-session time-lapse panel).
+      # `player:` (world_map_enhancer.md §5) restricts nodes to
+      # `world_map.rooms_visited_by(player)` and edges to the global `edges`
+      # table filtered to pairs where both endpoints are in that set — a
+      # deliberate approximation (that player's explored *subgraph*, not
+      # their real ordered path across possibly many sessions; the
+      # session-scoped map above is what draws a real ordered path). Room
+      # coordinates are still the same global, stable ones
+      # `rooms.coord_x/coord_y` already hold in every scope — only which
+      # nodes/edges are drawn changes. Nodes get a `data-seq` visit-order
+      # badge only in the session_id: scope (visit order is only
+      # well-defined for one session); no live-session markers are drawn in
+      # either scoped mode, only on the full map.
+      def map_svg(world_map, cell: 160, margin: 90, session_id: nil, player: nil)
+        if session_id
+          session_visits  = world_map.visits_for(session_id)
+          visited_titles  = session_visits.map { |v| v[:room_title] }.uniq
+          rooms = world_map.rooms.select { |r| r[:coord] && visited_titles.include?(r[:title]) }
+        elsif player
+          visited_titles = world_map.rooms_visited_by(player)
+          rooms = world_map.rooms.select { |r| r[:coord] && visited_titles.include?(r[:title]) }
+        else
+          rooms = world_map.rooms.select { |r| r[:coord] }
+        end
         return "" if rooms.empty?
 
         xs = rooms.map { |r| r[:coord][0] }
@@ -514,26 +593,75 @@ module LogViz
 
         resolve_node_overlaps!(positions, rooms.map { |r| r[:title] }.sort)
 
+        # Unexplored-neighbor stubs (world_map_enhancer.md §2) — full
+        # accumulated map only (session_id/player both nil); a session- or
+        # player-scoped replay stays exactly what was actually visited, per
+        # `map_svg`'s own doc above. Purely a rendering-time synthesis: for
+        # every visited room's parsed `exits`, compute the neighbor
+        # coordinate via the same DIRECTION_DELTA table `assign_coordinate`
+        # uses for real placement; if no room occupies that coordinate,
+        # remember it as a stub (deduped by coordinate — multiple rooms can
+        # exit toward the same unvisited neighbor). No `rooms` row is ever
+        # created, nothing is stored.
+        stub_targets = {}
+        if session_id.nil? && player.nil?
+          by_coord = rooms.each_with_object({}) { |r, h| h[r[:coord]] = r }
+          rooms.each do |r|
+            r[:exits].each do |abbrev|
+              direction = EXIT_DIRECTION_WORDS[abbrev.to_s.downcase]
+              delta = direction && WorldMap::DIRECTION_DELTA[direction]
+              next unless delta
+
+              coord = [r[:coord][0] + delta[0], r[:coord][1] + delta[1]]
+              next if by_coord[coord] # already a real, placed room — don't draw a stub on top of it
+
+              stub_targets[coord] ||= { direction: direction, from_title: r[:title] }
+            end
+          end
+        end
+
+        stub_positions = stub_targets.keys.each_with_object({}) do |coord, h|
+          h[coord] = [raw_px.call(coord[0]), raw_py.call(coord[1])]
+        end
+
         # Canvas bounds are derived from the actual (post-fan-out)
-        # `positions`, not re-derived from grid math — the fan-out above
-        # deliberately perturbs some rooms off their nominal grid cell, so
-        # the ground truth for "how big does this canvas need to be" is
-        # where things actually ended up, padded by half a box plus the
-        # standard margin on every side.
+        # `positions` plus any unexplored stubs, not re-derived from grid
+        # math — the fan-out above deliberately perturbs some rooms off
+        # their nominal grid cell, so the ground truth for "how big does
+        # this canvas need to be" is where things actually ended up, padded
+        # by half a box plus the standard margin on every side. Stubs are
+        # included here too so a real room's unvisited exit at the map's
+        # edge doesn't get clipped by a canvas sized only for visited rooms.
         half_w = MAP_NODE_BOX_W / 2.0
         half_h = MAP_NODE_BOX_H / 2.0
-        min_px, max_px = positions.values.map(&:first).minmax
-        min_py, max_py = positions.values.map(&:last).minmax
+        all_px = positions.values.map(&:first) + stub_positions.values.map(&:first)
+        all_py = positions.values.map(&:last) + stub_positions.values.map(&:last)
+        min_px, max_px = all_px.minmax
+        min_py, max_py = all_py.minmax
 
         shift_x, shift_y = margin - min_px + half_w, margin - min_py + half_h
         positions.each_value { |pos| pos[0] = (pos[0] + shift_x).round(1); pos[1] = (pos[1] + shift_y).round(1) }
+        stub_positions.each_value { |pos| pos[0] = (pos[0] + shift_x).round(1); pos[1] = (pos[1] + shift_y).round(1) }
 
         svg_w = (max_px + shift_x + half_w + margin).round(1)
         svg_h = (max_py + shift_y + half_h + margin).round(1)
 
         by_title = rooms.each_with_object({}) { |r, h| h[r[:title]] = r }
 
-        edges = world_map.edges.filter_map do |e|
+        edges_source =
+          if session_id
+            session_visits.each_cons(2).filter_map do |a, b|
+              next if a[:room_title] == b[:room_title]
+
+              { from: a[:room_title], via: b[:arrived_via], to: b[:room_title] }
+            end.uniq { |e| [e[:from], e[:via], e[:to]] }
+          elsif player
+            world_map.edges.select { |e| visited_titles.include?(e[:from]) && visited_titles.include?(e[:to]) }
+          else
+            world_map.edges
+          end
+
+        edges = edges_source.filter_map do |e|
           from, to = positions[e[:from]], positions[e[:to]]
           next unless from && to
 
@@ -541,38 +669,60 @@ module LogViz
           %(x2="#{to[0]}" y2="#{to[1]}"><title>#{text_html(e[:from])} #{text_html(e[:via])} &rarr; #{text_html(e[:to])}</title></line>)
         end.join
 
+        stubs = stub_targets.map do |coord, info|
+          x, y = stub_positions[coord]
+          <<~STUB
+            <g class="map-node-unexplored">
+              <circle class="map-node-unexplored-circle" cx="#{x}" cy="#{y}" r="#{MAP_NODE_UNEXPLORED_R}"/>
+              <text class="map-node-unexplored-glyph" x="#{x}" y="#{y + 5}" text-anchor="middle">?</text>
+              <title>#{text_html(info[:direction])} of #{text_html(info[:from_title])} &middot; not yet visited</title>
+            </g>
+          STUB
+        end.join
+
         nodes = rooms.map do |r|
           x, y = positions[r[:title]]
           href = "/map?#{build_query(room: r[:title], room_q: r[:title])}"
+          seq  = session_id ? visited_titles.index(r[:title]) + 1 : nil
+          badge = seq ? %(<circle class="map-node-seq-badge" cx="#{-half_w + 2}" cy="#{-half_h + 2}" r="9"/>)+
+                        %(<text class="map-node-seq" x="#{-half_w + 2}" y="#{-half_h + 5}" text-anchor="middle">#{seq}</text>) : ""
           <<~NODE
             <a href="#{href}" class="map-node-link">
               <g class="map-node" data-room="#{attr_html(r[:title])}" transform="translate(#{x}, #{y})">
                 <rect class="map-node-box" x="#{-half_w}" y="#{-half_h}" width="#{MAP_NODE_BOX_W}" height="#{MAP_NODE_BOX_H}" rx="6"/>
                 <text class="map-node-label" x="0" y="4" text-anchor="middle">#{text_html(truncate(r[:title], MAP_NODE_LABEL_CHARS))}</text>
+                #{badge}
                 <title>#{text_html(r[:title])} &middot; visited #{r[:visit_count]}&times;</title>
               </g>
             </a>
           NODE
         end.join
 
-        live = world_map.live_sessions
-        markers = live.each_with_index.filter_map do |s, i|
-          room = s[:last_room] && by_title[s[:last_room]]
-          next unless room
+        markers =
+          if session_id || player
+            ""
+          else
+            world_map.live_sessions.each_with_index.filter_map do |s, i|
+              room = s[:last_room] && by_title[s[:last_room]]
+              next unless room
 
-          x, y = positions[room[:title]]
-          color = LIVE_MARKER_COLORS[i % LIVE_MARKER_COLORS.length]
-          label = [s[:task], s[:model]].compact.join(" / ")
-          <<~MARKER
-            <circle class="map-live-marker" cx="#{x}" cy="#{y}" r="12" style="stroke: #{color}">
-              <title>#{text_html(s[:session_id])} &middot; #{text_html(label)} &middot; turn #{s[:turn]} iter #{s[:iteration]}</title>
-            </circle>
-          MARKER
-        end.join
+              x, y = positions[room[:title]]
+              color = LIVE_MARKER_COLORS[i % LIVE_MARKER_COLORS.length]
+              label = [s[:task], s[:model]].compact.join(" / ")
+              <<~MARKER
+                <circle class="map-live-marker" cx="#{x}" cy="#{y}" r="12" style="stroke: #{color}">
+                  <title>#{text_html(s[:session_id])} &middot; #{text_html(label)} &middot; turn #{s[:turn]} iter #{s[:iteration]}</title>
+                </circle>
+              MARKER
+            end.join
+          end
 
+        svg_scope_class = session_id ? "map-svg-session" : (player ? "map-svg-player" : nil)
+        svg_class = ["map-svg", svg_scope_class].compact.join(" ")
         <<~SVG
-          <svg class="map-svg" width="#{svg_w}" height="#{svg_h}" viewBox="0 0 #{svg_w} #{svg_h}" role="img" aria-label="world map">
+          <svg class="#{svg_class}" width="#{svg_w}" height="#{svg_h}" viewBox="0 0 #{svg_w} #{svg_h}" role="img" aria-label="world map">
             #{edges}
+            #{stubs}
             #{nodes}
             #{markers}
           </svg>
@@ -593,20 +743,86 @@ module LogViz
       path = File.join(settings.sessions_dir, "#{id}.jsonl")
       halt 404, "Session not found: #{id}" unless File.file?(path)
 
-      @session = Session.load(path)
+      @session    = Session.load(path)
+      @world_map  = world_map
+      @visits     = @world_map.visits_for(@session.id)
       erb :session
+    end
+
+    # Player roster (docs/plans/observability/players/
+    # multiple_concurrent_players.md §3/§4) — one card per distinct tagged
+    # `sessions.player`. Untagged (player: NULL) sessions never appear here;
+    # they still show up on / same as always.
+    get "/players" do
+      wm = world_map
+      @players = wm.players.map do |row|
+        sessions = wm.sessions.select { |s| s[:player] == row[:player] }
+                     .filter_map { |s| Session.load(s[:path]) if s[:path] && File.file?(s[:path]) }
+        row.merge(
+          rooms_discovered: wm.rooms_visited_by(row[:player]).length,
+          total_input_tokens: sessions.sum(&:total_input_tokens),
+          total_output_tokens: sessions.sum(&:total_output_tokens),
+          total_cost: sessions.filter_map(&:estimated_cost).sum
+        )
+      end
+      erb :players
+    end
+
+    get "/players/:name" do
+      name = params[:name]
+      wm   = world_map
+      @summary = wm.player_summary(name)
+      halt 404, "No sessions found for player: #{name}" if @summary[:sessions].empty?
+
+      # Cost/token totals reuse Session's existing per-session computation
+      # (see Session#estimated_cost/#total_input_tokens) rather than
+      # recomputing token accounting here — same "cost math lives in
+      # Session" boundary player_journey_map.md already established.
+      @sessions  = @summary[:sessions].filter_map { |s| Session.load(s[:path]) if s[:path] && File.file?(s[:path]) }
+      @world_map = wm
+      # Per-session visit lists for the Sessions table's compact path glyph
+      # (world_map_enhancer.md §5) — cheap, already-indexed `visits_for`
+      # queries, same accessor the full time-lapse panel on /sessions/:id
+      # already uses, just computed once per row here instead.
+      @visits_by_session = @sessions.each_with_object({}) { |s, h| h[s.id] = wm.visits_for(s.id) }
+      erb :player
     end
 
     PAGE_SIZE = 50
 
-    # Search/filter + paginated world map (room_world_inspector.md §4).
-    # `q`/`kind`/`room`/`examined` filter the discoveries table; `room_q`
-    # filters the rooms table; `before`/`rooms_before` are keyset-pagination
-    # cursors (a first_seen_at value — "older than this"), one per table so
-    # paging one doesn't reset the other.
+    # World Map overview (room_world_inspector.md §4/§5, trimmed by
+    # world_map_enhancer.md §4): the live-sessions banner/table and the
+    # zoomable/searchable map SVG itself. The Rooms/Discoveries tables that
+    # used to live inline here now have their own pages (`/map/rooms`,
+    # `/map/discoveries`, below) — this handler only needs the summary
+    # counts its two "N rooms discovered ->"/"N discoveries ->" links show,
+    # not the PAGE_SIZE-bounded queries those pages run themselves.
     get "/map" do
       @world_map = world_map
+      @discoveries_count = @world_map.discoveries(limit: nil).length
+      @live = @world_map.live_sessions
+      erb :map
+    end
 
+    # Rooms table, split out of /map (world_map_enhancer.md §4) so the map
+    # page itself isn't cluttered by it. `room_titles:` (optional,
+    # world_map_enhancer.md §5) scopes this same view to one player's own
+    # visited rooms for /players/:name/rooms below — @scope_player is only
+    # set on that route.
+    get "/map/rooms" do
+      @world_map    = world_map
+      @room_q       = params[:room_q]
+      @rooms_before = params[:rooms_before]
+      @rooms = @world_map.rooms_matching(q: @room_q, before: @rooms_before, limit: PAGE_SIZE)
+      @next_rooms_before = @rooms.last[:first_seen][:at] if @rooms.length == PAGE_SIZE
+      erb :rooms
+    end
+
+    # Discoveries table, split out of /map the same way. `q`/`kind`/`room`/
+    # `examined` filter, `before` is the keyset-pagination cursor — same
+    # params /map's form used to post here.
+    get "/map/discoveries" do
+      @world_map = world_map
       @q        = params[:q]
       @kind     = params[:kind]
       @room     = params[:room]
@@ -620,15 +836,50 @@ module LogViz
                                              before: @before, limit: PAGE_SIZE)
       @next_before = @discoveries.last[:first_seen_at] if @discoveries.length == PAGE_SIZE
 
-      @room_q       = params[:room_q]
-      @rooms_before = params[:rooms_before]
-      @rooms = @world_map.rooms_matching(q: @room_q, before: @rooms_before, limit: PAGE_SIZE)
-      @next_rooms_before = @rooms.last[:first_seen][:at] if @rooms.length == PAGE_SIZE
-
       @room_titles = @world_map.rooms.map { |r| r[:title] }.sort
       @kinds       = LogViz::ContentFact::KINDS + ["unknown"]
-      @live        = @world_map.live_sessions
-      erb :map
+      erb :discoveries
+    end
+
+    # Player-scoped Rooms/Discoveries — the "Knowledge" section's drill-down
+    # pages (world_map_enhancer.md §5). Reuses rooms.erb/discoveries.erb
+    # verbatim with an extra @scope_player local rather than forking new
+    # templates: same tables, same filter/search/pagination behavior, just
+    # pre-scoped to `world_map.rooms_visited_by(name)` via the `room_titles:`
+    # allowlist those two WorldMap methods gained for exactly this.
+    get "/players/:name/rooms" do
+      name = params[:name]
+      @world_map    = world_map
+      @scope_player = name
+      @room_q       = params[:room_q]
+      @rooms_before = params[:rooms_before]
+      @rooms = @world_map.rooms_matching(q: @room_q, before: @rooms_before, limit: PAGE_SIZE,
+                                          room_titles: @world_map.rooms_visited_by(name))
+      @next_rooms_before = @rooms.last[:first_seen][:at] if @rooms.length == PAGE_SIZE
+      erb :rooms
+    end
+
+    get "/players/:name/discoveries" do
+      name = params[:name]
+      @world_map    = world_map
+      @scope_player = name
+      @q        = params[:q]
+      @kind     = params[:kind]
+      @room     = params[:room]
+      @examined = case params[:examined]
+                  when "1" then true
+                  when "0" then false
+                  end
+      @before   = params[:before]
+
+      visited = @world_map.rooms_visited_by(name)
+      @discoveries = @world_map.discoveries(q: @q, kind: @kind, room: @room, examined: @examined,
+                                             before: @before, limit: PAGE_SIZE, room_titles: visited)
+      @next_before = @discoveries.last[:first_seen_at] if @discoveries.length == PAGE_SIZE
+
+      @room_titles = visited.sort
+      @kinds       = LogViz::ContentFact::KINDS + ["unknown"]
+      erb :discoveries
     end
 
     # Polling endpoint for /map's live-update script (room_world_inspector

@@ -912,17 +912,43 @@ table.sessions a:hover {
   margin-bottom: 1.5rem;
 }
 
+/* Positioning root for the zoom controls / in-map search overlays
+   (world_map_enhancer.md §1/§3) — a plain sibling wrapper around
+   `.map-scroll`/`.time-lapse-map`, not the scrollable element itself, so
+   an absolutely-positioned overlay pinned to it stays fixed in the corner
+   of the viewport instead of scrolling away with the map's content. Takes
+   over the flex-item sizing `.map-scroll`/`.time-lapse-map` used to have
+   directly, since it's now the flex child of `.map-layout`/
+   `.time-lapse-layout` instead. `_map_zoom.erb`'s script finds every
+   `.map-zoom-root` on the page and injects its controls into it. */
+.map-zoom-root {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* A bounded height is what actually makes dragging (and vertical
+   scrolling) do anything (world_map_enhancer.md §7 addendum) — without
+   one, this box has no vertical constraint to overflow, so it just grows
+   to fit the SVG and the *page* scrolls instead; a map whose width also
+   happens to fit its container (routine for the smaller, player-scoped
+   Knowledge map — world_map_enhancer.md §5) then has zero overflow in
+   either direction, and drag-to-pan is a genuine no-op, not a broken
+   listener. Same cap on `.time-lapse-map` below, for the same reason. */
 .map-scroll {
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
   cursor: grab;
-  flex: 1 1 auto;
-  min-width: 0;
+  width: 100%;
+  max-height: 36rem;
 }
 
-.map-scroll.dragging {
+/* Shared with .time-lapse-map (below) — both are drag-to-pan targets of
+   the shared _map_drag.erb partial (world_map_enhancer.md §7). */
+.map-scroll.dragging,
+.time-lapse-map.dragging {
   cursor: grabbing;
 }
 
@@ -1143,4 +1169,338 @@ table.sessions a:hover {
   max-width: 22rem;
   white-space: normal;
   word-break: break-word;
+}
+
+/* Players roster (docs/plans/observability/players/
+   multiple_concurrent_players.md §3/§4) */
+.player-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.9rem;
+}
+
+.player-card {
+  display: block;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  text-decoration: none;
+  color: var(--text);
+  transition: border-color 0.15s ease;
+}
+
+.player-card:hover {
+  border-color: var(--accent);
+}
+
+.player-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.35rem;
+}
+
+.player-card-name {
+  font-weight: 600;
+  font-size: 1.05rem;
+}
+
+.player-card-idle {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.player-card-room {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-bottom: 0.5rem;
+}
+
+.player-card-room strong {
+  color: var(--text);
+}
+
+.player-card-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+/* Discovered-vs-discoverable KPI progress bars reuse .budget/.bar-fill
+   (see app.rb#progress_bar) — no new bar widget, just this page's own
+   spacing around them. */
+.breakdown .budget {
+  margin-bottom: 0.6rem;
+}
+
+/* Per-session time-lapse path panel (multiple_concurrent_players.md §4) */
+.time-lapse-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.time-lapse-map {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  width: 100%;
+  cursor: grab;
+  max-height: 36rem;
+}
+
+.time-lapse-detail {
+  flex: 0 0 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.time-lapse-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.tl-btn {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 6px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.tl-btn:hover {
+  border-color: var(--accent);
+}
+
+#tl-slider {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.time-lapse-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.time-lapse-list li {
+  display: grid;
+  grid-template-columns: 1.5rem 1fr auto;
+  gap: 0.2rem 0.5rem;
+  align-items: baseline;
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.time-lapse-list li:last-child {
+  border-bottom: none;
+}
+
+.time-lapse-list li:hover {
+  background: var(--user-bg);
+}
+
+.time-lapse-list li.tl-active {
+  background: var(--user-bg);
+  border-left: 3px solid var(--accent);
+}
+
+.tl-seq {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-room {
+  font-weight: 600;
+  grid-column: 2;
+}
+
+.tl-meta {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.tl-time {
+  grid-row: 1 / span 2;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+/* Sequence-order badge on a session-scoped map node (map_svg's session_id:
+   filter) and the "currently on this step" highlight the time-lapse
+   scrubber toggles via JS. */
+.map-node-seq-badge {
+  fill: var(--accent);
+}
+
+.map-node-seq {
+  font-size: 10px;
+  fill: #fff;
+  pointer-events: none;
+}
+
+.map-node.active .map-node-box {
+  stroke: var(--live);
+  stroke-width: 3;
+  fill: var(--injected-bg);
+}
+
+/* Zoom controls overlay (world_map_enhancer.md §1) — injected by
+   _map_zoom.erb's script into every `.map-zoom-root` on the page; pinned
+   to a corner regardless of the map's own scroll position (see
+   `.map-zoom-root`'s comment above `.map-scroll`). */
+.map-zoom-controls {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 2;
+  display: flex;
+  gap: 0.25rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.2rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.map-zoom-btn {
+  width: 1.6rem;
+  height: 1.6rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.map-zoom-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.map-zoom-reset {
+  width: auto;
+  padding: 0 0.5rem;
+  font-size: 0.7rem;
+}
+
+/* The transform-scaled map SVG needs a fixed transform origin the zoom
+   script anchors its scroll-compensation math against; set here so the
+   very first zoom step (before JS has set an inline style) still scales
+   from the same corner. */
+.map-svg {
+  transform-origin: 0 0;
+}
+
+/* In-map live search (world_map_enhancer.md §3) — injected by
+   _map_search.erb into the World Map page's one `.map-zoom-root`. */
+.map-search-box {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 2;
+}
+
+.map-search-input {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.82rem;
+  width: 200px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.map-search-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Search match/dim states — highlight rather than hide, so edges and the
+   overall map shape stay legible while searching. */
+.map-node-match .map-node-box {
+  stroke: var(--live);
+  stroke-width: 3;
+}
+
+.map-node-dim {
+  opacity: 0.25;
+}
+
+/* Unexplored-neighbor stub (world_map_enhancer.md §2) — a dashed, unlabeled
+   placeholder for a known-but-unvisited exit; not clickable (no <a>
+   wrapper, unlike a real room node), so the default cursor stays put. */
+.map-node-unexplored-circle {
+  fill: var(--panel);
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+
+.map-node-unexplored-glyph {
+  font-size: 13px;
+  font-weight: 600;
+  fill: var(--muted);
+  pointer-events: none;
+}
+
+/* Summary links out to the standalone Rooms/Discoveries pages
+   (world_map_enhancer.md §4/§5) — used on /map and the player Knowledge
+   section alike. */
+.map-links {
+  display: flex;
+  gap: 1rem;
+  margin: -0.5rem 0 1.25rem;
+  font-size: 0.85rem;
+}
+
+.map-links a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.map-links a:hover {
+  text-decoration: underline;
+}
+
+/* Compact per-session path glyph (world_map_enhancer.md §5) — see
+   app.rb#session_path_glyph. */
+.path-glyph-link {
+  display: inline-block;
+  line-height: 0;
+}
+
+.path-glyph {
+  display: block;
+  width: 100%;
+  max-width: 160px;
+  height: 28px;
+}
+
+.path-glyph-line {
+  fill: none;
+  stroke: var(--track);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
 }

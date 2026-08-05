@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Brings up everything week2_observability's dashboards depend on:
+#   - the OTel collector + Jaeger + Prometheus + Grafana stack (docker compose)
+#   - log_viz (the Sinatra log viewer)
+#
+# Safe to re-run: skips anything already up instead of erroring or double-starting.
+# Pass --restart to force everything to pick up code/config changes instead of
+# being skipped as "already running": kills whatever's actually bound to
+# log_viz's port (falling back to that if the pid file is stale or missing,
+# not just trusting it) and force-recreates the docker compose stack before
+# the normal startup logic runs. Either way, a freshly started log_viz is
+# verified to actually be listening before this script reports success —
+# a crash-on-bind is treated as a failed start, not a false positive.
+set -euo pipefail
+
+RESTART=0
+for arg in "$@"; do
+  case "$arg" in
+    --restart) RESTART=1 ;;
+    *)
+      echo "Unknown argument: $arg" >&2
+      echo "Usage: $0 [--restart]" >&2
+      exit 1
+      ;;
+  esac
+done
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+OTEL_DIR="$REPO_ROOT/week2_observability/otel"
+LOG_VIZ_DIR="$REPO_ROOT/week2_observability/log_viz"
+
+LOG_VIZ_PORT="${PORT:-4567}"
+LOG_VIZ_PID_FILE="${LOG_VIZ_PID_FILE:-/tmp/log_viz.pid}"
+LOG_VIZ_LOG_FILE="${LOG_VIZ_LOG_FILE:-/tmp/log_viz.log}"
+
+# Whether `ss` (used below to find out what's actually bound to a port,
+# not just what the pid file claims) is available — checked once rather
+# than per-call. Both helpers below degrade gracefully without it: less
+# precise, but never wrong in the way trusting a stale pid file was.
+HAS_SS=1
+command -v ss >/dev/null 2>&1 || HAS_SS=0
+
+# PID of whatever's actually bound to $1/tcp right now, or empty if nothing
+# is (or `ss` isn't available). The pid file alone isn't trustworthy here:
+# it can go stale (process died and was replaced outside this script, or a
+# previous --restart's kill targeted the wrong pid), and trusting it
+# blindly is exactly how a stale server used to survive a --restart
+# undetected while the script still reported success.
+port_owner_pid() {
+  [[ "$HAS_SS" -eq 1 ]] || return 0
+  ss -ltnp 2>/dev/null | grep -E ":$1[[:space:]]" | grep -oP 'pid=\K[0-9]+' | head -n1
+}
+
+# Waits (up to ~5s) for pid $1 to actually be listening on $LOG_VIZ_PORT.
+# Fails fast if the process exits before that — a crash-on-bind (e.g.
+# something else still holding the port) must be reported as a failed
+# start, not silently accepted just because `nohup ... &` returned a pid.
+# Without `ss` to confirm the bind, falls back to "still alive after a
+# short grace period" — weaker, but still catches the crash-on-bind case
+# this exists for, since that failure mode is near-instant.
+wait_for_log_viz_up() {
+  local pid="$1" tries=0
+  while (( tries < 20 )); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "==> log_viz (pid $pid) exited immediately — last lines of $LOG_VIZ_LOG_FILE:" >&2
+      tail -n 20 "$LOG_VIZ_LOG_FILE" >&2 2>/dev/null || true
+      return 1
+    fi
+    if [[ "$HAS_SS" -eq 0 ]]; then
+      (( tries >= 3 )) && return 0
+    elif [[ "$(port_owner_pid "$LOG_VIZ_PORT")" == "$pid" ]]; then
+      return 0
+    fi
+    sleep 0.25
+    ((tries++))
+  done
+  echo "==> log_viz (pid $pid) is running but never bound port $LOG_VIZ_PORT — see $LOG_VIZ_LOG_FILE" >&2
+  return 1
+}
+
+if [[ "$RESTART" -eq 1 ]]; then
+  target_pid=""
+  if [[ -f "$LOG_VIZ_PID_FILE" ]] && kill -0 "$(cat "$LOG_VIZ_PID_FILE")" 2>/dev/null; then
+    target_pid="$(cat "$LOG_VIZ_PID_FILE")"
+  fi
+
+  port_pid="$(port_owner_pid "$LOG_VIZ_PORT")"
+  if [[ -n "$port_pid" ]] && [[ "$port_pid" != "$target_pid" ]]; then
+    [[ -n "$target_pid" ]] && echo "==> --restart: pid file says $target_pid but port $LOG_VIZ_PORT is actually held by $port_pid — killing that instead"
+    target_pid="$port_pid"
+  fi
+
+  if [[ -n "$target_pid" ]]; then
+    echo "==> --restart: stopping log_viz (pid $target_pid)"
+    kill "$target_pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      kill -0 "$target_pid" 2>/dev/null || break
+      sleep 0.25
+    done
+    if kill -0 "$target_pid" 2>/dev/null; then
+      echo "==> --restart: pid $target_pid didn't exit after SIGTERM, sending SIGKILL" >&2
+      kill -9 "$target_pid" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$LOG_VIZ_PID_FILE"
+fi
+
+echo "==> Starting OTel collector / Jaeger / Prometheus / Grafana (docker compose)"
+if [[ "$RESTART" -eq 1 ]]; then
+  (cd "$OTEL_DIR" && docker compose up -d --force-recreate)
+else
+  (cd "$OTEL_DIR" && docker compose up -d)
+fi
+
+echo "==> Starting log_viz"
+if [[ -f "$LOG_VIZ_PID_FILE" ]] && kill -0 "$(cat "$LOG_VIZ_PID_FILE")" 2>/dev/null; then
+  echo "    already running (pid $(cat "$LOG_VIZ_PID_FILE"))"
+else
+  (
+    cd "$LOG_VIZ_DIR"
+    bundle check >/dev/null 2>&1 || bundle install
+    nohup bundle exec ruby bin/log_viz >"$LOG_VIZ_LOG_FILE" 2>&1 &
+    echo $! >"$LOG_VIZ_PID_FILE"
+  )
+  new_pid="$(cat "$LOG_VIZ_PID_FILE")"
+  if wait_for_log_viz_up "$new_pid"; then
+    echo "    started (pid $new_pid), logging to $LOG_VIZ_LOG_FILE"
+  else
+    rm -f "$LOG_VIZ_PID_FILE"
+    echo "==> log_viz failed to start — aborting" >&2
+    exit 1
+  fi
+fi
+
+cat <<EOF
+
+Services up:
+  log_viz     http://localhost:${LOG_VIZ_PORT}
+  Jaeger      http://localhost:16686
+  Prometheus  http://localhost:9090
+  Grafana     http://localhost:3000  (admin/admin)
+EOF

@@ -101,28 +101,69 @@ then concluded that it could look for other options such as fountain
 > Normally, player would know they need money and would check for money beforehand
 
 **Uncertainty**
-- Agent was able to get out of sewage, not sure if due to tool world_knowledge. Can't trace tool called. 
-    > Should trace tool call
+- Agent was able to get out of sewage by going 'up', could be due to pure luck
 - Discoveries in room: Uncertain whether it needs to be included in compacted context or we could utilize
 player's knowledge
 
+> A knowledge base, memory of exploration to make agents more capbale
+
 ### 7. Observability - Tracing, Logs, Monitoring
-Revisit: precise per-phase latency becomes something worth measuring
+Revisited: precise per-phase latency becomes something worth measuring
 and needing to query traces without custom UI
 As task and tools are growing larger, analyzing via UI is not enough to serve
-- 
- 
+- Will circle back to analyze viz when Agents execute more requests
 
-## 8. Seed players bin & Add safe fallback error when player not created
+### 8. A script to init all services
+We need a script to bring up all services
+**Build Gems**
+- mud_manager
+- boukensha (uninstall, build, install, set path boukensharc)
 
+**Start services**
+- log_viz
+- OTEL, prometheus, grafana
 
+### 9. Seed players bin & Add safe fallback error when player not created
+We need to fast seed a player to world and reset players
+- Added persona placeholders
+> We need to handle per profiles, as might want to add persona to diversify playstyle
 
+### 10. Clean broken world file from Session Logs
+- World map is much more cleaner, room nodes are no longer overlapping each other
+- Still can't perform zoom nor view un-discovered exit
+    > Room inspec should still cache 'exits' despite exits not discovered
+
+### 11. Player identity end-to-end, isolated per-player knowledge
+Conduct multiple players at the same time, isolate their journeyon Admin side
+- Block agents from seeing the world knowledge by the previously implemented tool room_knowledge
+> Enhance log_viz to view World Map and isolated journeys
+
+**Tasked 2 players with separate tasks**
+- Room parser is parsing welcome notes from MUD
+    - Noir the Pilferess (linkless) is standing here. 
+     + Subject: Noir the Pilferess
+     + Classified as Mob
+
+    > Might need to later clean this data a@nd/or stop parser from reading welcome notes
+- Examiner not working, could be due to of drop of tool room_knowledge
+- At 1 iteration, agent decided to check the surrounding streets from the market for a bakery or food shop => Agent literally just circling around to check every room nearby
+    - Only the last MUD response from this is passed to the next request
+    > Need a navigator
+
+- Visualizer is not parsing the possible exits from MUD response after a tool call. Path viz shows a question mark, but room inspector should know which room's at that exit
+- Found out that the all players are sharing knowledge of discoveries:
+    - when player unlock a room, all discoveries in that room is now shared to said player
+    > Not suppose to share, player need to inspect room again and gain its own knowledge
+
+    
+### 12. Tools catalog, permission and policy
+[todo]
 
 ## Technical Conclusions
 [todo]
 - I think the agents need to have access to its own knowledge/discoveries
 - I think the agents need initiate a plan before executing the task
--  
+- 
 
 - Consideration of injecting into a running agent's turn (pausing it, asking it a question mid-goal, nudging its plan)
 

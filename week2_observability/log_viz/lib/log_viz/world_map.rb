@@ -140,11 +140,22 @@ module LogViz
       );
       CREATE INDEX IF NOT EXISTS idx_visits_session ON visits(session_id);
 
+      -- `player` (Boukensha::PlayerProfile#name, from the session_start
+      -- event's `player` field — see docs/plans/observability/players/
+      -- multiple_concurrent_players.md §1) is nullable: a run launched
+      -- without --player, or any session logged before this feature
+      -- existed, stays player: NULL — an explicit, visible gap rather than
+      -- a guess (see the plan's "Known tradeoffs"). New databases get the
+      -- column via this CREATE TABLE; existing ones get it via the guarded
+      -- ALTER TABLE in #migrate_sessions_player_column! (CREATE TABLE IF
+      -- NOT EXISTS doesn't retrofit columns onto an already-existing
+      -- table).
       CREATE TABLE IF NOT EXISTS sessions (
         session_id TEXT PRIMARY KEY, path TEXT,
         task TEXT, provider TEXT, model TEXT, started_at TEXT,
         last_room TEXT, last_seen_at TEXT,
-        turn INTEGER NOT NULL DEFAULT 0, iteration INTEGER NOT NULL DEFAULT 0
+        turn INTEGER NOT NULL DEFAULT 0, iteration INTEGER NOT NULL DEFAULT 0,
+        player TEXT
       );
 
       CREATE TABLE IF NOT EXISTS self_state (
@@ -327,8 +338,11 @@ module LogViz
     # (room_world_inspector.md §4) — `q` matches title/description
     # substring, `before` is a first_seen_at cursor for "older than this
     # page's last row." `limit: nil` returns everything (used internally,
-    # e.g. by /map/live.json's "new since" count).
-    def rooms_matching(q: nil, before: nil, limit: 50)
+    # e.g. by /map/live.json's "new since" count). `room_titles:` is an
+    # optional allowlist (world_map_enhancer.md §5) — scopes the listing to
+    # one player's own `rooms_visited_by(name)` set for the /players/:name/
+    # rooms route; nil (default) is a no-op, today's unfiltered behavior.
+    def rooms_matching(q: nil, before: nil, limit: 50, room_titles: nil)
       where, params = [], []
 
       if present?(q)
@@ -339,6 +353,12 @@ module LogViz
       if present?(before)
         where << "first_seen_at < ?"
         params << before
+      end
+      if room_titles
+        return [] if room_titles.empty?
+
+        where << "title IN (#{room_titles.map { '?' }.join(',')})"
+        params.concat(room_titles)
       end
 
       sql = "SELECT title, description, exits, coord_x, coord_y, visit_count, " \
@@ -380,8 +400,12 @@ module LogViz
     # back for the examine/look-at that set the `examined` flag (nil when
     # not examined, or — rarely — when a fuzzy-matched `examinations` row
     # predates result_text being captured) — see EXAMINATION_RESULT_SQL.
-    def discoveries(q: nil, kind: nil, room: nil, examined: nil, before: nil, limit: 50)
-      where, params = discoveries_where(q: q, kind: kind, room: room, examined: examined, before: before)
+    # `room_titles:` is the same optional allowlist as `rooms_matching`
+    # (world_map_enhancer.md §5) — scopes to one player's own visited rooms.
+    def discoveries(q: nil, kind: nil, room: nil, examined: nil, before: nil, limit: 50, room_titles: nil)
+      where, params = discoveries_where(q: q, kind: kind, room: room, examined: examined, before: before,
+                                         room_titles: room_titles)
+      return [] if where == "0=1"
 
       sql = <<~SQL
         SELECT rc.content, MIN(rc.first_seen_at) AS earliest,
@@ -426,8 +450,64 @@ module LogViz
     def sessions
       @db.execute(
         "SELECT session_id, path, task, provider, model, started_at, " \
-        "last_room, last_seen_at, turn, iteration FROM sessions"
+        "last_room, last_seen_at, turn, iteration, player FROM sessions"
       ).map { |row| session_row_to_h(row) }
+    end
+
+    # Every room `player`'s own sessions have ever visited — the backbone of
+    # both per-player knowledge isolation (Boukensha::WorldKnowledge#
+    # room_knowledge, agent-side) and the discovered-vs-discoverable KPI
+    # (#player_summary) — see docs/plans/observability/players/
+    # multiple_concurrent_players.md §2/§3.
+    def rooms_visited_by(player)
+      @db.execute(
+        "SELECT DISTINCT room_title FROM visits WHERE session_id IN " \
+        "(SELECT session_id FROM sessions WHERE player = ?)", [player]
+      ).map { |r| r[0] }
+    end
+
+    # One row per distinct tagged player — session count, total turns/
+    # iterations across every session, first/last-seen timestamps, and
+    # whether any of their sessions is currently live (same LIVE_WINDOW_
+    # SECONDS heuristic /map already uses) with its current room. Backs
+    # the /players index page.
+    def players
+      live_by_player = live_sessions.each_with_object({}) { |s, h| h[s[:player]] ||= s }
+
+      @db.execute(
+        "SELECT player, COUNT(*), SUM(turn), SUM(iteration), MIN(started_at), MAX(last_seen_at) " \
+        "FROM sessions WHERE player IS NOT NULL AND player != '' GROUP BY player " \
+        "ORDER BY MAX(last_seen_at) DESC"
+      ).map do |player, session_count, turns, iterations, first_seen, last_seen|
+        live = live_by_player[player]
+        {
+          player: player, session_count: session_count.to_i,
+          total_turns: turns.to_i, total_iterations: iterations.to_i,
+          first_seen_at: first_seen, last_seen_at: last_seen,
+          live: !live.nil?, current_room: live && live[:last_room]
+        }
+      end
+    end
+
+    # This player's own session list plus the "discovered vs. discoverable"
+    # numbers for the KPI card (§4) — discoverable is "what's been found by
+    # anyone so far" (the engineer's current global totals), not a claim
+    # about the MUD's true size (nothing in this stack knows that). Token/
+    # cost totals aren't computed here — the caller (log_viz's /players/:name
+    # route) sums those per session via LogViz::Session, the same "cost math
+    # lives in Session" boundary player_journey_map.md already established.
+    def player_summary(name)
+      player_sessions = sessions.select { |s| s[:player] == name }
+      visited_rooms    = rooms_visited_by(name)
+
+      {
+        player: name,
+        sessions: player_sessions,
+        rooms_discovered: visited_rooms.length,
+        rooms_discoverable: rooms.length,
+        subjects_discovered: subjects_in_rooms(visited_rooms).length,
+        subjects_discoverable: all_subjects.length
+      }
     end
 
     def live_sessions
@@ -471,9 +551,15 @@ module LogViz
       }
     end
 
-    def discoveries_where(q:, kind:, room:, examined:, before:)
+    def discoveries_where(q:, kind:, room:, examined:, before:, room_titles: nil)
+      return ["0=1", []] if room_titles&.empty?
+
       where, params = ["1=1"], []
 
+      if room_titles
+        where << "rc.room_title IN (#{room_titles.map { '?' }.join(',')})"
+        params.concat(room_titles)
+      end
       if present?(q)
         where << "(LOWER(rc.content) LIKE ? OR LOWER(COALESCE(cf.subject, '')) LIKE ?)"
         like = "%#{q.strip.downcase}%"
@@ -509,6 +595,27 @@ module LogViz
       @db.execute(sql, [room_title]).map { |r| r[0] }
     end
 
+    # Distinct content_facts.subject across a given set of rooms — the
+    # "discovered" half of #player_summary's KPI numerator. Empty input ->
+    # empty output without a query (an empty IN (...) is invalid SQL).
+    def subjects_in_rooms(room_titles)
+      return [] if room_titles.empty?
+
+      placeholders = room_titles.map { "?" }.join(",")
+      @db.execute(
+        "SELECT DISTINCT cf.subject FROM room_contents rc " \
+        "JOIN content_facts cf ON cf.raw = rc.content " \
+        "WHERE rc.room_title IN (#{placeholders}) AND cf.subject IS NOT NULL",
+        room_titles
+      ).map { |r| r[0] }
+    end
+
+    # Distinct content_facts.subject across the whole map — the
+    # "discoverable" (denominator) half of #player_summary's KPI.
+    def all_subjects
+      @db.execute("SELECT DISTINCT subject FROM content_facts WHERE subject IS NOT NULL").map { |r| r[0] }
+    end
+
     def open_db!
       connect!
     rescue SQLite3::Exception => e
@@ -528,6 +635,20 @@ module LogViz
       @db.busy_timeout = 5000
       @db.execute_batch("PRAGMA journal_mode = WAL;")
       @db.execute_batch(SCHEMA)
+      migrate_sessions_player_column!
+      @db.execute_batch("CREATE INDEX IF NOT EXISTS idx_sessions_player ON sessions(player);")
+    end
+
+    # Retrofits `sessions.player` onto a database created before this
+    # column existed — CREATE TABLE IF NOT EXISTS (in SCHEMA, above) only
+    # creates the table from scratch, it never alters an existing one.
+    # Existing rows come back player: NULL, same as any other untagged
+    # session (see the SCHEMA comment on this column).
+    def migrate_sessions_player_column!
+      columns = @db.execute("PRAGMA table_info(sessions)").map { |row| row[1] }
+      return if columns.include?("player")
+
+      @db.execute_batch("ALTER TABLE sessions ADD COLUMN player TEXT;")
     end
 
     # ---------- background content-fact extraction (room_world_inspector.md §1) ----------
@@ -749,7 +870,7 @@ module LogViz
       {
         session_id: row[0], path: row[1], task: row[2], provider: row[3], model: row[4],
         started_at: row[5], last_room: row[6], last_seen_at: row[7],
-        turn: row[8].to_i, iteration: row[9].to_i
+        turn: row[8].to_i, iteration: row[9].to_i, player: row[10]
       }
     end
 
@@ -793,8 +914,8 @@ module LogViz
 
       case event["phase"]
       when "session_start"
-        @db.execute("UPDATE sessions SET task = ?, provider = ?, model = ?, started_at = ? WHERE session_id = ?",
-                    [event["task"], event["provider"], event["model"], event["at"], session_id])
+        @db.execute("UPDATE sessions SET task = ?, provider = ?, model = ?, started_at = ?, player = ? WHERE session_id = ?",
+                    [event["task"], event["provider"], event["model"], event["at"], event["player"], session_id])
       when "turn"
         @db.execute("UPDATE sessions SET turn = ? WHERE session_id = ?", [event["n"], session_id])
       when "iteration"

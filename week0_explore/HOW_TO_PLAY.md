@@ -39,7 +39,17 @@ They admin character will have the following attributes:
 
 I would recommend setting this to: `admin` / `password`
 
-After creating your admin character:
+**Preferred: use `week2_observability/bin/seed_players`.** It always
+bootstraps `.boukensha/players/admin.yaml` first (creating it with the
+`admin`/`password` convention above if missing), idempotently — safe to
+re-run after a world reset, and it won't touch an admin that already
+exists beyond confirming the stored password still works. See
+`docs/plans/observability/players/players_seeding.md` for the full design.
+The manual telnet steps below still work and are what the script itself
+automates, useful if you want to see the raw creation dance or something
+about the script isn't working.
+
+After creating your admin character (by hand or via the script):
 
 Confirm you're admin with `score`:
 
@@ -81,6 +91,14 @@ Exit out of the MUD so we can proceed to create our main character.
 
 Create a new character recommended: `dummy` and `helloworld`
 Choose a class any class, gender.
+
+**Preferred: use `week2_observability/bin/seed_players`.** Drop a YAML
+profile per player into `.boukensha/players/` (see
+`docs/plans/observability/players/players_seeding.md` for the shape) and
+run the script — it seeds every profile in that folder in one pass,
+prompting to skip or delete-and-recreate any that already exist, which is
+the fast path for restoring your whole player roster after a world reset
+instead of re-walking this manual dance for each one.
 
 ## Learn About Basic Commands
 
