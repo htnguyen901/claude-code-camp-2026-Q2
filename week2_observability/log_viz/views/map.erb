@@ -1,0 +1,230 @@
+<a href="/" class="back">&larr; All sessions</a>
+
+<h1>World Map</h1>
+<p class="meta">
+  Accumulated across every session ever logged &mdash; <span id="map-room-count"><%= @world_map.rooms.length %></span> room<%= "s" unless @world_map.rooms.length == 1 %> discovered,
+  <%= @world_map.edges.length %> known connection<%= "s" unless @world_map.edges.length == 1 %>.
+  Nodes shown are rooms this world map has actually recorded a visit to; dashed "?" markers are exits a visited room lists that haven't been stepped through yet.
+</p>
+
+<div id="map-live-banner">
+  <% if @live.any? %>
+    <div class="banner banner-ok">&#9679; <%= @live.length %> agent<%= "s" if @live.length != 1 %> playing right now</div>
+  <% end %>
+</div>
+
+<% if @world_map.rooms.empty? %>
+  <p class="empty">No rooms discovered yet &mdash; play a session that calls <code>look</code>/<code>move</code> to populate the map.</p>
+<% else %>
+  <div class="map-layout">
+    <div class="map-zoom-root">
+      <div class="map-scroll">
+        <%= map_svg(@world_map) %>
+      </div>
+    </div>
+    <div id="room-detail-panel" class="room-detail-panel" hidden>
+      <button type="button" id="room-detail-close" class="room-detail-close" aria-label="Close room details">&times;</button>
+      <div id="room-detail-body"></div>
+    </div>
+  </div>
+  <%= erb :_map_drag, layout: false %>
+  <%= erb :_map_zoom, layout: false %>
+  <%= erb :_map_search, layout: false %>
+<% end %>
+
+<div class="map-links">
+  <a href="/map/rooms"><%= @world_map.rooms.length %> room<%= "s" unless @world_map.rooms.length == 1 %> discovered &rarr;</a>
+  <a href="/map/discoveries"><%= @discoveries_count %> discover<%= @discoveries_count == 1 ? "y" : "ies" %> &rarr;</a>
+</div>
+
+<div class="breakdown">
+  <div class="breakdown-title">Agents playing right now</div>
+  <div id="map-live-table">
+    <% if @live.empty? %>
+      <p class="empty">No live sessions (no activity in the last 60s).</p>
+    <% else %>
+      <table class="breakdown-table">
+        <thead>
+          <tr>
+            <th>Session</th>
+            <th>Task</th>
+            <th>Model</th>
+            <th>Current room</th>
+            <th class="nowrap">Turn / iter</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @live.each do |s| %>
+            <tr>
+              <td><a href="/sessions/<%= s[:session_id] %>"><%= s[:session_id] %></a></td>
+              <td><%= s[:task] || "&mdash;" %></td>
+              <td><%= [s[:provider], s[:model]].compact.join(" / ") %></td>
+              <td><%= s[:last_room] || "&mdash;" %></td>
+              <td class="nowrap"><%= s[:turn] %> / <%= s[:iteration] %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    <% end %>
+  </div>
+</div>
+
+<noscript><meta http-equiv="refresh" content="15"></noscript>
+
+<!--
+  Small, plain, no-framework script (room_world_inspector.md §5,
+  world_map_visualization.md §2/§3) — a deliberate, narrow departure from
+  this project's otherwise plain-ERB/no-JS house style. Two independent
+  pieces, both with a working non-JS fallback (drag-to-pan lives in the
+  shared _map_drag.erb partial rendered above — world_map_enhancer.md §7):
+  1. Live-update poller: polls /map/live.json every few seconds and
+     patches only the live-session table/banner and a "N new since last
+     check" counter (pointing at the Rooms/Discoveries pages, since those
+     tables no longer live on this page — world_map_enhancer.md §4); never
+     touches the map SVG itself (a full re-fetch of that belongs to the
+     user clicking, not a timer). Falls back to the <noscript>-wrapped
+     <meta refresh> above when JS is disabled — a browser commits to an
+     http-equiv="refresh" timer at *parse* time, so it must never be
+     present in markup a running script would otherwise have to race to
+     remove; <noscript> means the browser only ever parses it when there's
+     no script to remove it in the first place, which is what actually
+     fixes the "page keeps resetting my scroll/open panel every ~15s" bug
+     DOM-removal couldn't reliably fix.
+  2. Click-to-inspect: intercepts a click on a room box and fetches
+     /map/rooms/:title.json into an inline panel instead of following the
+     box's <a href="/map?room=..."> — which is itself the fallback if the
+     fetch fails or JS never ran.
+-->
+<script>
+  (function () {
+    var since = new Date().toISOString();
+    var pollMs = 5000;
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, function (c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+      });
+    }
+
+    function renderLiveTable(live) {
+      var container = document.getElementById("map-live-table");
+      if (!live.length) {
+        container.innerHTML = '<p class="empty">No live sessions (no activity in the last 60s).</p>';
+        return;
+      }
+      var rows = live.map(function (s) {
+        return "<tr>" +
+          '<td><a href="/sessions/' + encodeURIComponent(s.session_id) + '">' + escapeHtml(s.session_id) + "</a></td>" +
+          "<td>" + escapeHtml(s.task || "—") + "</td>" +
+          "<td>" + escapeHtml([s.provider, s.model].filter(Boolean).join(" / ")) + "</td>" +
+          "<td>" + escapeHtml(s.room || "—") + "</td>" +
+          '<td class="nowrap">' + s.turn + " / " + s.iteration + "</td>" +
+          "</tr>";
+      }).join("");
+      container.innerHTML = '<table class="breakdown-table"><thead><tr>' +
+        "<th>Session</th><th>Task</th><th>Model</th><th>Current room</th>" +
+        '<th class="nowrap">Turn / iter</th></tr></thead><tbody>' + rows + "</tbody></table>";
+    }
+
+    function renderBanner(live) {
+      var banner = document.getElementById("map-live-banner");
+      if (!live.length) { banner.innerHTML = ""; return; }
+      banner.innerHTML = '<div class="banner banner-ok">&#9679; ' + live.length +
+        " agent" + (live.length !== 1 ? "s" : "") + " playing right now</div>";
+    }
+
+    function renderNewBanner(newRooms, newDiscoveries) {
+      var existing = document.getElementById("map-new-since-banner");
+      if (!newRooms && !newDiscoveries) {
+        if (existing) existing.remove();
+        return;
+      }
+      var parts = [];
+      if (newRooms) parts.push(newRooms + " new room" + (newRooms !== 1 ? "s" : "") + ' (<a href="/map/rooms">view</a>)');
+      if (newDiscoveries) parts.push(newDiscoveries + " new discover" + (newDiscoveries !== 1 ? "ies" : "y") + ' (<a href="/map/discoveries">view</a>)');
+      var html = '<div class="banner banner-warn">' + parts.join(", ") + " since you loaded this page</div>";
+      if (existing) {
+        existing.outerHTML = html.replace("<div", '<div id="map-new-since-banner"');
+      } else {
+        document.getElementById("map-live-banner").insertAdjacentHTML(
+          "afterend", html.replace("<div", '<div id="map-new-since-banner"'));
+      }
+    }
+
+    function poll() {
+      fetch("/map/live.json?since=" + encodeURIComponent(since))
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          renderBanner(data.live);
+          renderLiveTable(data.live);
+          renderNewBanner(data.new_rooms, data.new_discoveries);
+        })
+        .catch(function () { /* transient fetch error — try again next tick */ })
+        .finally(function () { setTimeout(poll, pollMs); });
+    }
+
+    setTimeout(poll, pollMs);
+
+    // ---- 2. Click-to-inspect (world_map_visualization.md §3) ----
+    // Drag-to-pan is handled by the shared _map_drag.erb partial (rendered
+    // above, world_map_enhancer.md §7) — its click listener registers on
+    // .map-scroll first and swallows the click that follows a real drag,
+    // so this handler only ever sees genuine clicks and doesn't need its
+    // own drag-state tracking.
+    var mapScroll = document.querySelector(".map-scroll");
+    var detailPanel = document.getElementById("room-detail-panel");
+    var detailBody = document.getElementById("room-detail-body");
+    var detailClose = document.getElementById("room-detail-close");
+
+    if (mapScroll && detailPanel) {
+      function renderRoomDetail(data) {
+        var exits = (data.exits || []).join(" ") || "—";
+        var discoveryItems = (data.discoveries || []).map(function (d) {
+          var examinedBadge = d.examined
+            ? '<span class="examined-badge examined-yes">&check; examined</span>'
+            : '<span class="examined-badge examined-no">not yet</span>';
+          var finding = d.examination_result
+            ? escapeHtml(d.examination_result)
+            : '<span class="muted">—</span>';
+          return "<li>" +
+            '<span class="kind-badge kind-' + escapeHtml(d.kind) + '">' + escapeHtml(d.kind) + "</span> " +
+            "<strong>" + escapeHtml(d.subject) + "</strong> " + examinedBadge +
+            '<div class="room-detail-finding">' + finding + "</div>" +
+            "</li>";
+        }).join("");
+
+        detailBody.innerHTML =
+          "<h3>" + escapeHtml(data.title) + "</h3>" +
+          '<p class="room-detail-meta">Visited ' + data.visit_count + "&times; &middot; exits: " +
+          escapeHtml(exits) + "</p>" +
+          (data.description ? '<p class="room-detail-desc">' + escapeHtml(data.description) + "</p>" : "") +
+          (discoveryItems
+            ? '<ul class="room-detail-discoveries">' + discoveryItems + "</ul>"
+            : '<p class="empty">No discoveries in this room yet.</p>');
+      }
+
+      function openRoomDetail(title) {
+        fetch("/map/rooms/" + encodeURIComponent(title) + ".json")
+          .then(function (r) { if (!r.ok) throw new Error("room lookup failed"); return r.json(); })
+          .then(function (data) {
+            renderRoomDetail(data);
+            detailPanel.hidden = false;
+          })
+          .catch(function () { /* leave the panel as-is; the <a> fallback would have navigated if JS were off */ });
+      }
+
+      mapScroll.addEventListener("click", function (e) {
+        var link = e.target.closest(".map-node-link");
+        if (!link) return;
+
+        var node = link.querySelector(".map-node[data-room]");
+        if (!node) return;
+
+        e.preventDefault();
+        openRoomDetail(node.getAttribute("data-room"));
+      });
+
+      detailClose.addEventListener("click", function () { detailPanel.hidden = true; });
+    }
+  })();
+</script>

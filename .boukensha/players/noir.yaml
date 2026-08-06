@@ -1,0 +1,11 @@
+name: noir
+password: ngan
+sex: F
+class: thief
+admin: false
+
+persona:
+  playstyle: null 
+  risk_mode: null
+  thought_process: null
+  notes: null

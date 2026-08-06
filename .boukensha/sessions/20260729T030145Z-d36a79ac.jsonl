@@ -1,3 +1,0 @@
-{"phase":"session_start","session_id":"20260729T030145Z-d36a79ac","at":"2026-07-29T10:01:45+07:00"}
-{"phase":"iteration","n":1,"max":25,"session_id":"20260729T030145Z-d36a79ac","at":"2026-07-29T10:01:45+07:00"}
-{"phase":"prompt","message_count":1,"messages":[{"role":"user","content":"Read the README.md file and summarise what this MUD player assistant framework can do."}],"tool_count":2,"tools":["read_file","list_directory"],"session_id":"20260729T030145Z-d36a79ac","at":"2026-07-29T10:01:45+07:00"}

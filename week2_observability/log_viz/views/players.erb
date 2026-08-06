@@ -1,0 +1,40 @@
+<a href="/" class="back">&larr; All sessions</a>
+
+<h1>Players</h1>
+<p class="meta">
+  One card per character that has logged in via <code>boukensha --player NAME</code> &mdash;
+  sessions launched without <code>--player</code> aren't tagged and don't appear here (see
+  <a href="/">all sessions</a> for those).
+</p>
+
+<% if @players.empty? %>
+  <p class="empty">No tagged players yet &mdash; run <code>boukensha --player NAME</code> to log in as a seeded character.</p>
+<% else %>
+  <div class="player-grid">
+    <% @players.each do |p| %>
+      <a href="/players/<%= CGI.escape(p[:player]) %>" class="player-card">
+        <div class="player-card-head">
+          <span class="player-card-name"><%= text_html(p[:player]) %></span>
+          <% if p[:live] %>
+            <span class="live-dot" title="active in the last minute">&#9679; live</span>
+          <% else %>
+            <span class="player-card-idle">idle</span>
+          <% end %>
+        </div>
+        <div class="player-card-room">
+          <% if p[:current_room] %>
+            currently in <strong><%= text_html(p[:current_room]) %></strong>
+          <% else %>
+            last seen <%= format_time(p[:last_seen_at]) %>
+          <% end %>
+        </div>
+        <div class="player-card-stats">
+          <span><%= p[:session_count] %> session<%= "s" unless p[:session_count] == 1 %></span>
+          <span><%= p[:rooms_discovered] %> room<%= "s" unless p[:rooms_discovered] == 1 %> discovered</span>
+          <span><%= fmt_tokens(p[:total_input_tokens] + p[:total_output_tokens]) %> tok</span>
+          <span><%= fmt_cost(p[:total_cost]) %></span>
+        </div>
+      </a>
+    <% end %>
+  </div>
+<% end %>

@@ -64,6 +64,15 @@ module MudManager
       session
     end
 
+    def create_character_session(session_id, name:, password:, sex:, char_class:, **opts)
+      raise Error, "session '#{session_id}' already connected" if @sessions.key?(session_id)
+
+      session = Session.new(**opts).open
+      session.create_character(name, password, sex: sex, char_class: char_class)
+      @sessions_mu.synchronize { @sessions[session_id] = session }
+      session
+    end
+
     # ---------- JSON-RPC dispatch ----------
 
     def dispatch(msg)
@@ -127,6 +136,38 @@ module MudManager
             },
             "required" => []
           }
+        },
+        {
+          "name" => "create_character",
+          "description" => "Create a brand-new character and register its session under an id so " \
+                            "other tools can address it via `session_id`. Fails if the name is " \
+                            "already taken — use `connect` for an existing character instead.",
+          "inputSchema" => {
+            "type" => "object",
+            "properties" => {
+              "session_id" => { "type" => "string", "description" => "id to register this session under" },
+              "name"       => { "type" => "string", "description" => "new character name" },
+              "password"   => { "type" => "string", "description" => "password to set for the new character" },
+              "sex"        => { "type" => "string", "description" => "\"M\" or \"F\"" },
+              "char_class" => { "type" => "string", "description" => "class menu letter: \"C\" Cleric, \"T\" Thief, \"W\" Warrior, \"M\" Magic-user" },
+              "host"       => { "type" => "string", "description" => "MUD host (default: #{Session::DEFAULT_HOST})" },
+              "port"       => { "type" => "integer", "description" => "MUD port (default: #{Session::DEFAULT_PORT})" }
+            },
+            "required" => %w[session_id name password sex char_class]
+          }
+        },
+        {
+          "name" => "delete_character",
+          "description" => "Permanently delete the character behind an already-connected session " \
+                            "(via `connect` or `create_character`), then close that session.",
+          "inputSchema" => {
+            "type" => "object",
+            "properties" => {
+              "session_id" => { "type" => "string", "description" => "session whose character to delete (default: \"default\")" },
+              "password"   => { "type" => "string", "description" => "character password, re-verified by the server" }
+            },
+            "required" => %w[password]
+          }
         }
       ]
     end
@@ -136,8 +177,10 @@ module MudManager
       args = params["arguments"] || {}
       text, error =
         case name
-        when "connect"    then handle_connect(args)
-        when "disconnect" then handle_disconnect(args)
+        when "connect"          then handle_connect(args)
+        when "disconnect"       then handle_disconnect(args)
+        when "create_character" then handle_create_character(args)
+        when "delete_character" then handle_delete_character(args)
         else handle_primitive(name, args)
         end
       { "content" => [{ "type" => "text", "text" => text }], "isError" => !!error }
@@ -161,6 +204,35 @@ module MudManager
 
       session.close
       ["disconnected '#{session_id}'", false]
+    end
+
+    def handle_create_character(args)
+      session_id = (args["session_id"] || DEFAULT_SESSION).to_s
+      opts = {}
+      opts[:host] = args["host"] if args["host"]
+      opts[:port] = Integer(args["port"]) if args["port"]
+      create_character_session(
+        session_id,
+        name: args["name"].to_s, password: args["password"].to_s,
+        sex: args["sex"].to_s, char_class: args["char_class"].to_s,
+        **opts
+      )
+      ["created and connected session '#{session_id}'", false]
+    rescue Session::Error, Error, ArgumentError => e
+      [format_error(e), true]
+    end
+
+    def handle_delete_character(args)
+      session_id = (args["session_id"] || DEFAULT_SESSION).to_s
+      session = @sessions_mu.synchronize { @sessions[session_id] }
+      return ["no such session '#{session_id}' — call connect or create_character first", true] unless session
+
+      session.delete_character(args["password"].to_s)
+      @sessions_mu.synchronize { @sessions.delete(session_id) }
+      session.close
+      ["deleted character and closed session '#{session_id}'", false]
+    rescue Session::Error => e
+      [format_error(e), true]
     end
 
     def handle_primitive(name, args)

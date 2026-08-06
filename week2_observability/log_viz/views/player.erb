@@ -1,0 +1,101 @@
+<a href="/players" class="back">&larr; All players</a>
+
+<h1><%= text_html(@summary[:player]) %></h1>
+<p class="meta">
+  <%= @summary[:sessions].length %> session<%= "s" unless @summary[:sessions].length == 1 %> logged as this character.
+</p>
+
+<div class="breakdown">
+  <div class="breakdown-title">Journey vs. the current World Map</div>
+  <p class="meta">
+    Discoverable is what's been found by <em>anyone</em> so far, not the MUD's true size &mdash;
+    the engineer's <a href="/map">World Map</a> is the only ground truth this stack has.
+  </p>
+  <%= progress_bar(@summary[:rooms_discovered], @summary[:rooms_discoverable],
+                   label: "Rooms discovered &middot; #{@summary[:rooms_discovered]} / #{@summary[:rooms_discoverable]} (#{pct_raw(@summary[:rooms_discovered], @summary[:rooms_discoverable])}%)") %>
+  <%= progress_bar(@summary[:subjects_discovered], @summary[:subjects_discoverable],
+                   label: "Discoveries found &middot; #{@summary[:subjects_discovered]} / #{@summary[:subjects_discoverable]} (#{pct_raw(@summary[:subjects_discovered], @summary[:subjects_discoverable])}%)") %>
+</div>
+
+<!--
+  Knowledge section (world_map_enhancer.md §5) — this player's own explored
+  subgraph, isolated from the engineer-facing /map dashboard: rooms/edges
+  restricted to `rooms_visited_by(name)` (map_svg's `player:` scope), plus
+  links to the same Rooms/Discoveries pages the World Map uses, pre-scoped
+  to this player. An approximation, not a real ordered path — see
+  map_svg's own doc for why (a player aggregated across possibly many
+  sessions has no single ordered traversal; that finer replay already
+  exists per-session below, in the Sessions table's path glyph and the
+  full time-lapse on /sessions/:id).
+-->
+<div class="breakdown">
+  <div class="breakdown-title">Knowledge &mdash; what <%= text_html(@summary[:player]) %> has personally explored</div>
+  <% if @summary[:rooms_discovered].zero? %>
+    <p class="empty">No rooms visited yet.</p>
+  <% else %>
+    <div class="map-layout">
+      <div class="map-zoom-root">
+        <div class="map-scroll">
+          <%= map_svg(@world_map, player: @summary[:player]) %>
+        </div>
+      </div>
+    </div>
+    <%= erb :_map_drag, layout: false %>
+    <%= erb :_map_zoom, layout: false %>
+  <% end %>
+  <div class="map-links">
+    <a href="/players/<%= CGI.escape(@summary[:player]) %>/rooms"><%= @summary[:rooms_discovered] %> room<%= "s" unless @summary[:rooms_discovered] == 1 %> discovered &rarr;</a>
+    <a href="/players/<%= CGI.escape(@summary[:player]) %>/discoveries"><%= @summary[:subjects_discovered] %> discover<%= @summary[:subjects_discovered] == 1 ? "y" : "ies" %> &rarr;</a>
+  </div>
+</div>
+
+<div class="breakdown">
+  <div class="breakdown-title">Sessions</div>
+  <% if @sessions.empty? %>
+    <p class="empty">No readable session logs for this player.</p>
+  <% else %>
+    <table class="sessions">
+      <thead>
+        <tr>
+          <th>Started</th>
+          <th>Session ID</th>
+          <th>Task</th>
+          <th>Model(s)</th>
+          <th>Iterations</th>
+          <th>Tokens (in / out)</th>
+          <th class="nowrap">Cost</th>
+          <th>Path</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% @sessions.each do |session| %>
+          <tr>
+            <td class="nowrap"><%= format_time(session.started_at) %></td>
+            <td><a href="/sessions/<%= session.id %>"><%= session.id %></a></td>
+            <td class="task">
+              <% if session.task_names.any? %>
+                <span class="task-name"><%= session.task_names.join(", ") %></span>
+              <% else %>
+                <%= truncate(session.task, 90) %>
+              <% end %>
+            </td>
+            <td class="model-list"><%= truncate(session.model_summary, 54) %></td>
+            <td class="nowrap"><%= session.iteration_count %></td>
+            <td class="nowrap"><%= session.total_input_tokens %> / <%= session.total_output_tokens %></td>
+            <td class="nowrap"><%= fmt_cost(session.estimated_cost) %></td>
+            <td>
+              <% visits = @visits_by_session[session.id] || [] %>
+              <% if visits.any? %>
+                <a href="/sessions/<%= session.id %>" class="path-glyph-link" title="<%= visits.length %> room visit<%= "s" unless visits.length == 1 %> &mdash; open full time-lapse">
+                  <%= session_path_glyph(visits) %>
+                </a>
+              <% else %>
+                <span class="muted">&mdash;</span>
+              <% end %>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  <% end %>
+</div>

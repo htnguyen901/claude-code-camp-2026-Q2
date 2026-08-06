@@ -11,6 +11,29 @@ module MudManager
   class FakeMud
     attr_reader :port
 
+    # A longer, realistically-flowery CircleMUD-shaped room echo (ANSI
+    # title/exits color, a multi-sentence prose description, and itemized
+    # "X is here."-style content lines) — the initial room ("A nondescript
+    # room.") is deliberately too short to exercise prose compaction at all,
+    # so this is the fixture boukensha's Compactor Tier 2 eval suite needs
+    # (see docs/plans/token_optimization/mud_response_compaction.md, Tier 2
+    # Verification #1). Reached with a single "north" from the start room.
+    FLOWERY_ROOM = (
+      "\e[0;33mThe Sunken Garden\e[0m\r\n" \
+      "   You stand in a sprawling, overgrown garden that must once have been\r\n" \
+      "the pride of some forgotten noble house. Ivy chokes the crumbling stone\r\n" \
+      "archways, and thick moss carpets every surface in a soft green blanket.\r\n" \
+      "Somewhere beneath the tangled hedges you can hear the faint trickle of\r\n" \
+      "running water, though the source is nowhere in sight. Broken statues,\r\n" \
+      "worn featureless by centuries of rain, stand sentinel among the weeds,\r\n" \
+      "watching over a garden that has long since reclaimed itself from any\r\n" \
+      "human hand.\r\n" \
+      "\e[0;36m[ Exits: s ]\e[0m\r\n" \
+      "\e[0;32mA weathered stone fountain is here, choked with moss and dead leaves.\e[0m\r\n" \
+      "\e[0;33mA tarnished silver locket lies half-buried in the undergrowth.\e[0m\r\n" \
+      "> "
+    ).freeze
+
     def initialize(name: "Gandalf", password: "secret")
       @name       = name
       @password   = password
@@ -66,6 +89,10 @@ module MudManager
         if line =~ /\Aquit\z/i
           sock.write("Goodbye.\r\n")
           break
+        end
+        if line =~ /\Anorth\z/i
+          sock.write("\r\n#{FLOWERY_ROOM}")
+          next
         end
         sock.write("You do: #{line}\r\n> ")
       end

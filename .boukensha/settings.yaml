@@ -1,3 +1,15 @@
+# Named, reusable tool-name glob sets — see docs/plans/tools_policy/
+# permission.md. A task with no tasks.<name>.tools block at all gets zero
+# tools (deny-by-default, Boukensha::Tasks::Base.tool_policy); `role: full`
+# below is what restores today's "sees every tool any configured mcp_servers
+# entry advertises" behavior for the one task that still needs it.
+tool_roles:
+  full: ["*"]
+  navigator: ["tbamud__move"]
+  inspector: [tbamud__look, tbamud__shop, tbamud__consume, tbamud__examine, tbamud__info_self,
+             tbamud__info_world, tbamud__consider, tbamud__diagnose,
+             room_knowledge]
+
 tasks:
   # player:
   #   provider: anthropic
@@ -9,6 +21,51 @@ tasks:
     model: gpt-5.4-mini
     prompt_override:
       system: true
+    # tools:
+      # role: full
+    tools:
+      role: inspector
+      allow: [tbamud__move]  
+  # log_viz's background content-classification subtask (ContentFact —
+  # docs/plans/observability/room_world_inspector.md §1), read by
+  # LogViz::Settings, NOT by the boukensha gem — log_viz is a separate Ruby
+  # program that just happens to read this same file. Same "task" shape as
+  # `player` above (provider/model), so it's configured the same way.
+  #
+  # Only `provider: ollama` is actually implemented today — a different
+  # value here is accepted (won't raise) but falls back to ollama with a
+  # warning, since this is a best-effort background feature, not something
+  # that should block log_viz from starting. `host` is optional; the
+  # `OLLAMA_HOST` env var still overrides it if set (useful when log_viz
+  # and Ollama don't share a network namespace, e.g. cross-VM/WSL setups).
+  content_fact:
+    provider: ollama
+    model: gemma4
+    # host: http://localhost:11434
+
+  # boukensha's own MUD tool-result compactor (see
+  # docs/plans/token_optimization/mud_response_compaction.md). Tiers 0/1 —
+  # ANSI/prompt-noise stripping and structure-aware trim, keeping room
+  # title/exits/contents verbatim — always run, no config needed. `enabled`
+  # here gates only Tier 2, the opt-in LLM prose rewrite; left off until
+  # its eval (task completion / next-action correctness) confirms it's safe
+  # to default on.
+  compactor:
+    enabled: true
+    provider: ollama
+    model: gemma4
+    # host: http://localhost:11434
+    min_chars: 150
+
+# OpenTelemetry traces/metrics (Boukensha::Telemetry, week2_observability/
+# ruby/15_observability). Defaults on — it's inert instrumentation and
+# fail-open (no collector running just means it's dropped), unlike
+# tasks.compactor above which defaults off because Tier 2 is a real behavior
+# change. Set to false for zero SDK overhead instead of "exports nowhere".
+# Everything else (endpoint, service name, exporter choice) is standard OTel
+# env vars — see the step's README — not settings.yaml.
+# observability:
+#   enabled: false
 
 # mud:
 #   host: localhost
@@ -30,6 +87,17 @@ mcp_servers:
   # for the agent not knowing what a MUD is. `mud-manager` is installed on
   # PATH (the mud_manager gem), so we call it directly instead.
   # This entry is `required` (the default), so a bad path fails loudly at boot.
+  #
+  # MUD_NAME/MUD_PASSWORD are intentionally blank — a static default
+  # character here is exactly what made running two players at once
+  # impossible (docs/plans/observability/players/
+  # multiple_concurrent_players.md). Run `boukensha --player NAME` to log in
+  # as one of .boukensha/players/*.yaml; Boukensha.overlay_player_credentials
+  # fills these two keys in at boot from that profile. The keys stay present
+  # (empty) rather than being deleted outright because the overlay only ever
+  # mutates a key that's already declared here — never invents a new one.
+  # Omitting --player now prints a notice and runs with no MUD identity,
+  # which will fail to log in rather than silently reusing a shared default.
   mud:
     command: mud-manager
     args:    [--mcp]
@@ -37,11 +105,30 @@ mcp_servers:
     env:
       MUD_HOST:     localhost
       MUD_PORT:     4000
-      MUD_NAME:     dummy
-      MUD_PASSWORD: helloworld
+      MUD_NAME:
+      MUD_PASSWORD:
 
-    filesystem:
-      command:  npx
-      args:     [-y, "@modelcontextprotocol/server-filesystem", /tmp]
-      prefix:   fs
-      required: false          
+  filesystem:
+    command:  npx
+    args:     [-y, "@modelcontextprotocol/server-filesystem", /tmp]
+    prefix:   fs
+    required: false
+
+# log_viz / room_knowledge (docs/plans/observability/room_world_inspector.md)
+# — provider/model/host for the content-fact subtask now live in
+# `tasks.content_fact` above. What's left is still environment-only, since
+# it's per-machine path/network config rather than a "task" setting:
+#
+#   LOG_VIZ_WORLD_MAP_DB  default: <repo root>/.boukensha/world_map.sqlite3
+#     SQLite file log_viz's WorldMap reads/writes, and the same file
+#     week2_observability/ruby/13_room_inspector's room_knowledge tool
+#     opens read-only.
+#   LOG_VIZ_SESSIONS_DIR  default: <repo root>/.boukensha/sessions
+#   OLLAMA_HOST           default: http://localhost:11434 (or tasks.content_fact.host above)
+#     Must be reachable from wherever log_viz runs, which may not be the
+#     same host/container the agent's own Ollama backend (backends/
+#     ollama.rb) hits — e.g. Ollama running natively in WSL (this repo's
+#     dev setup) needs no override; Ollama on the Windows host instead of
+#     inside WSL would need this pointed at the Windows-side address.
+#     Unreachable is a soft failure (kind: "unknown"), never blocks
+#     ingestion.

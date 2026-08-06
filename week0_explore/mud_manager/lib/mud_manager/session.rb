@@ -28,6 +28,7 @@ module MudManager
     class ConnectionError < Error; end
     class LoginError     < Error; end
     class Timeout        < Error; end
+    class CharacterExistsError < Error; end
 
     attr_reader :host, :port
 
@@ -198,15 +199,22 @@ module MudManager
       read_until_prompt(timeout: timeout)
     end
 
-    # Walk the CircleMUD login dance:
+    # Send a name at the "By what name do you wish to be known?" prompt and
+    # wait for the server to reveal which of the two nanny() branches it
+    # took: an existing name goes straight to "Password:"; an unrecognized
+    # one asks to confirm the spelling ("Did I get that right, <Name>
+    # (Y/N)?") before walking into new-character creation. #login and
+    # #create_character both start here and branch on the result.
+    def identify(name)
+      read_until(/By what name do you wish to be known.*\?/i)
+      send_command(name)
+      read_until(/Password|Did I get that right/i)
+    end
+
+    # Walk the CircleMUD login dance for an EXISTING character:
     def login(username, password)
-      self.read_until(/By what name do you wish to be known.*\?/i)
-
-      # Enter Username
-      self.send_command(username)
-
-      # Expect Password Prompt
-      self.read_until(/Password/i)
+      result = identify(username)
+      raise LoginError, "character '#{username}' does not exist yet" if result =~ /Did I get that right/i
 
       # Enter Password
       self.send_command(password)
@@ -230,6 +238,56 @@ module MudManager
       elsif output =~ /Wrong password/i
         raise LoginError, "wrong password"
       end
+    end
+
+    # Walk the CircleMUD new-character dance (nanny()'s CON_QSEX/CON_QCLASS
+    # states) for a name #identify confirmed is NOT already taken: confirm
+    # spelling, set + confirm a password, sex, class, then land in-game the
+    # same way #login's fresh-`Welcome` branch does. Races are not asked
+    # about here — this server build has them disabled (confirmed against
+    # the live dev MUD; if a future build enables them a race prompt would
+    # need handling right after the class prompt).
+    #
+    # `sex` is "M" or "F". `char_class` is the single letter shown in the
+    # class menu ("C" Cleric, "T" Thief, "W" Warrior, "M" Magic-user).
+    def create_character(name, password, sex:, char_class:)
+      result = identify(name)
+      raise CharacterExistsError, "character '#{name}' already exists" if result =~ /Password/i
+
+      send_command("Y") # "Did I get that right, <Name> (Y/N)?"
+      read_until(/Give me a password/i)
+      send_command(password)
+      read_until(/retype password/i)
+      send_command(password)
+      read_until(/What is your sex/i)
+      send_command(sex)
+      # Anchored to line start: the class MENU's own preceding line is
+      # "Select a class:", which also contains the substring "class:" and
+      # would otherwise match early.
+      read_until(/^Class:/i)
+      send_command(char_class)
+      read_until(/PRESS RETURN/i)
+      send_command(:return) # enter for main menu
+      send_command(1)       # enter the game
+      read_until_quiet
+    end
+
+    # Deletes the character of the session's CURRENT, already-in-game login
+    # (call #login first) via the post-login character menu's "[5] Delete
+    # this character" option. Requires re-entering `password` a second time
+    # — CircleMUD's own verification step, not this client's invention.
+    #
+    # The server does not respond to further input on this connection once
+    # deletion completes — open a fresh Session for anything after this.
+    def delete_character(password)
+      send_command("quit")
+      read_until(/Make your choice/i)
+      send_command(5)
+      read_until(/password for verification/i)
+      send_command(password)
+      read_until(/type "yes" to confirm/i)
+      send_command("yes")
+      read_until(/deleted/i)
     end
 
     # ----- internals -----

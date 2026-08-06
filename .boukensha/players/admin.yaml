@@ -1,0 +1,11 @@
+name: admin
+password: password
+sex: M
+class: warrior
+admin: true
+
+persona:
+  playstyle: null
+  risk_mode: null
+  thought_process: null
+  notes: null

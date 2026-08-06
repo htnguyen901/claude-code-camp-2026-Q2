@@ -1,0 +1,11 @@
+name: dina
+password: deener
+sex: F
+class: magic-user
+admin: false
+
+persona:
+  playstyle: null
+  risk_mode: null
+  thought_process: null
+  notes: null
