@@ -178,11 +178,17 @@ they need money to buy food. Or look for a free food source
 
 ## Technical Conclusions
 [todo]
-- I think the agents need to have access to its own knowledge/discoveries
-- I think the agents need initiate a plan before executing the task
-- 
-
-- Consideration of injecting into a running agent's turn (pausing it, asking it a question mid-goal, nudging its plan)
+- The agents need to have access to its own knowledge/discoveries
+- Agents need initiate a plan before executing the task
+- We need an orchestrator with different subagents handling different scopes of tasks
+- Agents should have access to its own knowledge, but still have to mimic a 'real player' AKA not all knowledge is accessible
 
 
 ## Key Takeaway
+
+- **Observability was the real unlock this week.** Most Week 1 failures were invisible until we exposed request payloads, token composition, and per-room context. Once visible, root causes turned out to be simple (missing system prompt, unsummarized MUD text flooding context) rather than deep reasoning failures.
+- **Token growth needs active management, not just measurement.** Tools alone ate 70-90% of the context budget. Front-loading/caching tools and compacting MUD responses helped, but a slow local-model compactor traded token savings for latency — the fix has to be fast enough to not bottleneck the loop.
+- **Visibility without structure doesn't make agents capable.** Seeing *what* the agent did (log_viz, tracing, world map) didn't stop it from circling rooms, forgetting earlier discoveries in the same turn, or assuming an answer instead of checking. Agents need persistent knowledge/memory and an explicit plan, not just a better window into their own behavior.
+- **Correctness bugs hide in shared state once you scale beyond one agent.** Multiplayer testing surfaced knowledge leaking across players and shared caches after unlocking rooms — issues invisible with a single agent. Isolation boundaries (per-player knowledge, per-player context) need to be verified explicitly, not assumed from single-agent testing.
+- **Reducing tool count reduces tokens but doesn't reduce confusion by itself.** Limiting the toolset per subtask cut token usage clearly, but agents still got stuck (e.g. escaping the sewer) without a planner or feedback mechanism to unstick them.
+- **The next bottleneck is orchestration, not observability.** With logging/tracing/world-map infra now in place, the gap has moved to: agents lacking a pre-execution plan, no orchestrator to route subtasks to the right scope/tools, and no feedback loop when an agent is stuck — this is the natural next focus for Week 3.
