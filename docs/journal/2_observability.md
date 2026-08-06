@@ -9,7 +9,7 @@ These are considered high-risked limitation that needs to be optimized prior to 
 
 ## Technical Goal
 
-- Optimize token usage, improve observability and human feedback/intervention 
+- Optimize token usage, improve observability and visbility of journey
 
 ## Technical Uncertainty
 [todo]
@@ -19,14 +19,13 @@ These are considered high-risked limitation that needs to be optimized prior to 
 
 ## Technical Hypothesis
 [todo]
-- I think that reducing list of tools sent to LLM Client could potentially cause: 'missing an important tool that could guide Agent to the direct path'
-- 
+- I think that reducing list of tools sent to LLM Client could potentially cause: 'missing an important tool that could guide Agent to the correct path'
+- I think we will need to implement tracing to track request payload and growth of context
 
 ## Technical Observations
 - Context are growing too fast depsite no effort for narration
 - Agents could not even complete simple task such as: find the bakery and tell me what is on the menu
 - Lots of wasted tool calls
-- 
 
 ### 1. Expose Request payload details
 - Tasked to find the bakery but decided to find bar instead => Found system prompt has never been passed 
@@ -153,10 +152,28 @@ Conduct multiple players at the same time, isolate their journeyon Admin side
 - Visualizer is not parsing the possible exits from MUD response after a tool call. Path viz shows a question mark, but room inspector should know which room's at that exit
 - Found out that the all players are sharing knowledge of discoveries:
     - when player unlock a room, all discoveries in that room is now shared to said player
-    > Not suppose to share, player need to inspect room again and gain its own knowledge
+    > Not suppose to share knowledge, player need to inspect room again and gain its own knowledge
 
     
 ### 12. Tools catalog, permission and policy
+Mentioned in [2]
+- Tools grouped by roles
+- Add Policy on Registry
+- Subtask will have their own Context/Registry and set of tools to optimize no. of tool calls
+
+**Tasked with checking own status and resolve any problems**
+Limit the tools, testing on navigation set and room_knowledge only
+- Token sent in request is much reduced
+- Fell into sewer, still cant figure out how to get out of sewer
+- Agents got stuck multiple times trying to get out of sewer, then stop iteration for feedback
+    > Who will give feedback in the loop?
+
+- On 2nd try, Agent successfully found fountain and drank, hunger is not resolved. Agent knew 
+they need money to buy food. Or look for a free food source
+    - When checked status (1st turn 1st iteration), Agent should have known it has no money
+    - Should have had a money to get money first then find shop
+    > We need a planner
+
 [todo]
 
 ## Technical Conclusions

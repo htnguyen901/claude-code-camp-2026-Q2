@@ -1,3 +1,15 @@
+# Named, reusable tool-name glob sets — see docs/plans/tools_policy/
+# permission.md. A task with no tasks.<name>.tools block at all gets zero
+# tools (deny-by-default, Boukensha::Tasks::Base.tool_policy); `role: full`
+# below is what restores today's "sees every tool any configured mcp_servers
+# entry advertises" behavior for the one task that still needs it.
+tool_roles:
+  full: ["*"]
+  navigator: ["tbamud__move"]
+  inspector: [tbamud__look, tbamud__shop, tbamud__consume, tbamud__examine, tbamud__info_self,
+             tbamud__info_world, tbamud__consider, tbamud__diagnose,
+             room_knowledge]
+
 tasks:
   # player:
   #   provider: anthropic
@@ -9,7 +21,11 @@ tasks:
     model: gpt-5.4-mini
     prompt_override:
       system: true
-
+    # tools:
+      # role: full
+    tools:
+      role: inspector
+      allow: [tbamud__move]  
   # log_viz's background content-classification subtask (ContentFact —
   # docs/plans/observability/room_world_inspector.md §1), read by
   # LogViz::Settings, NOT by the boukensha gem — log_viz is a separate Ruby
@@ -92,11 +108,11 @@ mcp_servers:
       MUD_NAME:
       MUD_PASSWORD:
 
-    filesystem:
-      command:  npx
-      args:     [-y, "@modelcontextprotocol/server-filesystem", /tmp]
-      prefix:   fs
-      required: false
+  filesystem:
+    command:  npx
+    args:     [-y, "@modelcontextprotocol/server-filesystem", /tmp]
+    prefix:   fs
+    required: false
 
 # log_viz / room_knowledge (docs/plans/observability/room_world_inspector.md)
 # — provider/model/host for the content-fact subtask now live in

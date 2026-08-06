@@ -13,7 +13,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MUD_MANAGER_DIR="$REPO_ROOT/week0_explore/mud_manager"
 
 # <-- update this when you move to a different/later boukensha step -->
-BOUKENSHA_STEP_DIR="$REPO_ROOT/week2_observability/ruby/16_visibility"
+BOUKENSHA_STEP_DIR="$REPO_ROOT/week2_observability/ruby/17_tool_permission"
 
 BOUKENSHARC="$HOME/.boukensharc"
 
