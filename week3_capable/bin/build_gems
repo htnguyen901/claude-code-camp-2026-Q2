@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Rebuilds and reinstalls mud_manager + boukensha, then repoints
+# ~/.boukensharc's boukensha_path at the step this script just built —
+# gem install never touches boukensha_path itself (see ~/.boukensharc's own
+# comment on this), so this script keeps the two in sync by hand.
+#
+# boukensha lives in a different folder per step (week1_baseline/ruby/*,
+# week2_observability/ruby/*, ...). Update BOUKENSHA_STEP_DIR below every
+# time you move to a later step.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+MUD_MANAGER_DIR="$REPO_ROOT/week0_explore/mud_manager"
+
+# <-- update this when you move to a different/later boukensha step -->
+BOUKENSHA_STEP_DIR="$REPO_ROOT/week3_capable/ruby/18_orchestrator"
+
+BOUKENSHARC="$HOME/.boukensharc"
+
+echo "==> Building + installing mud_manager ($MUD_MANAGER_DIR)"
+(
+  cd "$MUD_MANAGER_DIR"
+  gem build mud_manager.gemspec
+  gem_file=$(ls -t mud_manager-*.gem | head -1)
+  gem install --force "./$gem_file"
+)
+
+echo "==> Uninstalling current boukensha gem (if any)"
+gem uninstall boukensha --executables --all --force >/dev/null 2>&1 || true
+
+echo "==> Building + installing boukensha ($BOUKENSHA_STEP_DIR)"
+(
+  cd "$BOUKENSHA_STEP_DIR"
+  gem build boukensha.gemspec
+  gem_file=$(ls -t boukensha-*.gem | head -1)
+  gem install --force "./$gem_file"
+)
+
+echo "==> Pointing boukensha_path at $BOUKENSHA_STEP_DIR in $BOUKENSHARC"
+if [[ -f "$BOUKENSHARC" ]] && grep -q "^boukensha_path:" "$BOUKENSHARC"; then
+  sed -i "s|^boukensha_path:.*|boukensha_path: $BOUKENSHA_STEP_DIR|" "$BOUKENSHARC"
+else
+  echo "boukensha_path: $BOUKENSHA_STEP_DIR" >>"$BOUKENSHARC"
+fi
+
+echo "Done. boukensha_path -> $BOUKENSHA_STEP_DIR"

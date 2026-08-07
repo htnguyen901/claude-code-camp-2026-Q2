@@ -333,6 +333,22 @@ module MudManager
       cmd(:save_char, "save", "save")
     end
 
+    # Responds to CircleMUD's built-in pager, which any sufficiently long
+    # output (help text, a big room description, a long score/inventory
+    # listing, ...) can trigger — it takes over the input line with its own
+    # prompt ("[ Return to continue, (q)uit, (r)efresh, (b)ack, or page
+    # number (N/M) ]") until answered, and ignores every normal command
+    # until it is. `input` blank/omitted sends a bare Return (continue to
+    # the next page); "q" stops paging and returns to the game prompt; "r"
+    # redisplays the current page; "b" goes back a page; a numeric string
+    # jumps to that page. No enum here — the valid numeric range depends on
+    # how many pages this particular output has, which the client can't
+    # know in advance.
+    def page(input = "")
+      raw = input.to_s.strip
+      cmd(:page, "page", raw)
+    end
+
     def quit
       # CircleMUD requires the literal four-letter "quit" for mortals.
       cmd(:quit, "quit", "quit")

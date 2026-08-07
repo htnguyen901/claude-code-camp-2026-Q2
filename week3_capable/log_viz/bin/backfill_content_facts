@@ -1,0 +1,54 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#
+# One-off migration, two passes:
+#   1. classify every existing `room_contents` row that predates
+#      ContentFact (docs/plans/observability/room_world_inspector.md
+#      §1/"Schema migration")
+#   2. scan every room's description for embedded mentions that predate
+#      that capability (see "Follow-up: description-embedded mentions") —
+#      things narrated in prose ("A small note hangs on the wall.") that
+#      never got their own itemized room_contents line
+# — both synchronously, right now, instead of waiting for the background
+# worker to reach them the next time each room happens to come up again.
+# Safe to re-run — already-classified/-scanned rows are skipped unless
+# they're `source: "fallback"` (both passes always retry those; see
+# WorldMap#backfill_content_facts!/#backfill_description_mentions!).
+#
+# Provider/model come from `.boukensha/settings.yaml`'s `tasks.content_fact`
+# block (see lib/log_viz/settings.rb) — same config this script's WorldMap
+# instance reads for the background worker, since this script runs the same
+# extraction logic synchronously. Needs that provider's daemon reachable —
+# for the default "ollama" provider, at OLLAMA_HOST (default
+# http://localhost:11434, or tasks.content_fact.host in settings.yaml). An
+# unreachable daemon doesn't fail the run; unclassified/unscanned rows just
+# stay kind: "unknown"/source: "fallback", same fail-soft behavior as
+# ongoing ingestion.
+#
+#   bundle exec ruby bin/backfill_content_facts
+#   LOG_VIZ_WORLD_MAP_DB=/path/to/world_map.sqlite3 bundle exec ruby bin/backfill_content_facts
+
+require_relative "../lib/log_viz/world_map"
+
+sessions_dir = ENV.fetch("LOG_VIZ_SESSIONS_DIR") {
+  File.expand_path("../../../.boukensha/sessions", __dir__)
+}
+db_path = ENV["LOG_VIZ_WORLD_MAP_DB"]
+
+# content_fact_worker: false — this script IS the (synchronous) worker for
+# this one pass; running the background thread at the same time would just
+# have both racing over the same unclassified/unscanned rows.
+world_map = LogViz::WorldMap.new(sessions_dir: sessions_dir, db_path: db_path, content_fact_worker: false)
+world_map.refresh!
+
+puts "[backfill_content_facts] classifying unclassified room_contents rows..."
+content_count = world_map.backfill_content_facts! do |n, raw|
+  puts "  #{n}: #{raw[0, 70]}"
+end
+puts "[backfill_content_facts] done — classified #{content_count} row#{'s' unless content_count == 1}."
+
+puts "[backfill_content_facts] scanning room descriptions for embedded mentions..."
+scan_count = world_map.backfill_description_mentions! do |n, title|
+  puts "  #{n}: #{title[0, 70]}"
+end
+puts "[backfill_content_facts] done — scanned #{scan_count} room#{'s' unless scan_count == 1}."

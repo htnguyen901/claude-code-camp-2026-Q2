@@ -34,6 +34,20 @@ module MudManager
       "> "
     ).freeze
 
+    # A two-screen CircleMUD-style pager exchange, triggered by "help" —
+    # exercises MudManager::Primitives#page / the boukensha `page` tool
+    # (docs/journal/3_capable.md's "Agent view level info, then can't get
+    # out ... don't have tool to exit" bug). The first screen deliberately
+    # does NOT end in "> " (Session#read_until_prompt's sentinel), the same
+    # way a real CircleMUD pager prompt doesn't — only answering it with
+    # RETURN/"q"/etc. gets the normal prompt back.
+    PAGER_PAGE_1 = (
+      "This is a very long help topic that does not fit on one screen.\r\n" \
+      "[ Return to continue, (q)uit, (r)efresh, (b)ack, or page number (1/2) ]"
+    ).freeze
+
+    PAGER_PAGE_2 = "The rest of the help topic. That's everything.\r\n> ".freeze
+
     def initialize(name: "Gandalf", password: "secret")
       @name       = name
       @password   = password
@@ -68,6 +82,7 @@ module MudManager
       return unless login!(sock)
 
       entered = false
+      paging  = false
       loop do
         line = read_line(sock)
         break if line.nil?
@@ -86,12 +101,34 @@ module MudManager
           next
         end
 
+        if paging
+          case line.to_s.strip.downcase
+          when "", "return"
+            sock.write("\r\n#{PAGER_PAGE_2}")
+            paging = false
+          when "q"
+            sock.write("\r\n> ")
+            paging = false
+          else
+            # "r"/"b"/a page number: still paging either way in this fixture
+            # — real behavior (redisplay/go back/jump) isn't needed to
+            # exercise "the agent can send something and it's accepted".
+            sock.write("\r\n#{PAGER_PAGE_1}")
+          end
+          next
+        end
+
         if line =~ /\Aquit\z/i
           sock.write("Goodbye.\r\n")
           break
         end
         if line =~ /\Anorth\z/i
           sock.write("\r\n#{FLOWERY_ROOM}")
+          next
+        end
+        if line =~ /\Ahelp\z/i
+          sock.write("\r\n#{PAGER_PAGE_1}")
+          paging = true
           next
         end
         sock.write("You do: #{line}\r\n> ")

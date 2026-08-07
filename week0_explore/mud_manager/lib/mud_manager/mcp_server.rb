@@ -50,8 +50,9 @@ module MudManager
       return unless name && pass
 
       opts = {}
-      opts[:host] = ENV["MUD_HOST"] if ENV["MUD_HOST"]
-      opts[:port] = ENV["MUD_PORT"].to_i if ENV["MUD_PORT"] && !ENV["MUD_PORT"].empty?
+      opts[:host]    = ENV["MUD_HOST"] if ENV["MUD_HOST"]
+      opts[:port]    = ENV["MUD_PORT"].to_i if ENV["MUD_PORT"] && !ENV["MUD_PORT"].empty?
+      opts[:timeout] = Float(ENV["MUD_TIMEOUT"]) if ENV["MUD_TIMEOUT"] && !ENV["MUD_TIMEOUT"].empty?
       connect_session(DEFAULT_SESSION, name: name, password: pass, **opts)
     end
 

@@ -1,0 +1,222 @@
+# OTel Stack
+
+Self-hosted OpenTelemetry backend: Collector → Jaeger (traces) + Prometheus
+(metrics), with Grafana on top. This is **Phase 0** of
+[`docs/plans/observability/otel_and_logs/`](../../docs/plans/observability/otel_and_logs/00_overview.md)
+— pure infrastructure, no application code depends on it yet. It sits next
+to `log_viz`, not inside `ruby/15_observability`, because it's shared
+backend that a future Python agent can reuse unchanged.
+
+```
+boukensha (Ruby, later) ─┐
+                          ├─OTLP (4317 gRPC / 4318 HTTP)─▶ otel-collector ──▶ jaeger (traces, :16686)
+python agent (later)    ─┘                                      │
+                                                                  └────────▶ prometheus (:9090, scrapes :8889)
+                                                                                   │
+                                                                                   ▼
+                                                                              grafana (:3000)
+                                                                              (Jaeger + Prometheus
+                                                                               datasources, provisioned)
+```
+
+The collector is the only thing application code ever talks to — it only
+needs to know one OTLP endpoint, never "Jaeger's API" or "Prometheus's
+remote-write format." Swapping backends is a collector-config change, zero
+app code touched. See the [overview](../../docs/plans/observability/otel_and_logs/00_overview.md)
+for the full rationale.
+
+## Installation
+
+Prerequisites — nothing but Docker:
+
+- Docker Engine
+- Docker Compose v2 (the `docker compose` subcommand, not the standalone
+  `docker-compose` v1 binary)
+
+Check both:
+
+```sh
+docker --version
+docker compose version
+```
+
+No Ruby/Python dependencies, no `bundle install` — this directory is only
+compose config and provisioning files, all four images are pulled
+pre-built from Docker Hub.
+
+## Build
+
+There's nothing to build — all four services use stock upstream images.
+"Build" here just means pulling them:
+
+```sh
+cd week2_observability/otel
+docker compose pull
+```
+
+(`docker compose up` does this automatically on first run if the images
+aren't cached; running `pull` explicitly just separates the download step
+from the start step, useful the first time since the images total a few
+hundred MB.)
+
+## How to run
+
+```sh
+cd week2_observability/otel
+docker compose up -d
+```
+
+Then:
+
+| Service | URL | Notes |
+|---|---|---|
+| Jaeger UI | <http://localhost:16686> | trace waterfalls |
+| Prometheus UI | <http://localhost:9090> | raw metric queries; **Status → Targets** should show `otel-collector` as `UP` |
+| Grafana | <http://localhost:3000> | login `admin` / `admin` (see [Configuration](#configuration)) |
+| Collector OTLP (gRPC) | `localhost:4317` | gRPC transport |
+| Collector OTLP (HTTP) | `localhost:4318` | HTTP/protobuf transport — **what the Ruby SDK uses**; `opentelemetry-exporter-otlp`'s own default is `http://localhost:4318`, not the `4317` gRPC port some other languages default to (see `week2_observability/ruby/15_observability/README.md`) |
+| Collector `/metrics` | <http://localhost:8889/metrics> | what Prometheus scrapes |
+
+Check everything came up:
+
+```sh
+docker compose ps
+```
+
+All four containers (`otel-collector`, `jaeger`, `prometheus`, `grafana`)
+should show `Up`. First boot takes a few seconds for Grafana to finish
+provisioning — if `localhost:3000` doesn't answer immediately, retry after
+a couple of seconds or `docker compose logs -f grafana`.
+
+### Stopping
+
+```sh
+docker compose down
+```
+
+No named volumes are declared, so `down` (without `-v`) already leaves
+nothing behind — Grafana/Prometheus/Jaeger state is in-container and
+ephemeral by design (this is local dev infra, not a persistent backend;
+traces/metrics only need to survive long enough to look at them).
+
+## Configuration
+
+| File | Purpose |
+|---|---|
+| `docker-compose.yml` | the four services, ports, volume mounts |
+| `collector-config.yaml` | OTLP receiver → batch processor → exporters (OTLP/gRPC to Jaeger, Prometheus exporter on `:8889`) |
+| `prometheus.yml` | scrape config, one job: `otel-collector:8889` |
+| `provisioning/datasources/datasources.yaml` | Grafana datasources (Prometheus, Jaeger), auto-loaded on Grafana boot |
+| `provisioning/dashboards/dashboards.yaml` | tells Grafana to load dashboard JSON from `provisioning/dashboards/` |
+| `provisioning/dashboards/boukensha-overview.json` | the starter dashboard itself |
+
+Grafana admin credentials are set via env vars in `docker-compose.yml`
+(`GF_SECURITY_ADMIN_USER` / `GF_SECURITY_ADMIN_PASSWORD`, both `admin`).
+Per [phase0_infra.md's notes](../../docs/plans/observability/otel_and_logs/phase0_infra.md#notes),
+this stack is local-only/loopback-bound with no real auth/TLS posture —
+these aren't meant to guard anything, just avoid Grafana's random
+autogenerated default password.
+
+No `.env` file or other secrets are needed anywhere in this directory.
+
+## Verifying the pipeline end-to-end
+
+Before any Ruby code depends on this stack, you can confirm the whole path
+— OTLP in, trace out in Jaeger, metric out in Prometheus — works with two
+plain `curl` calls (no `otel-cli` / SDK needed). The collector's OTLP/HTTP
+JSON receiver expects **hex-encoded** trace/span IDs (not base64, despite
+strict protobuf-JSON), which is what trips people up hand-rolling a
+payload.
+
+**Trace:**
+
+```sh
+python3 - <<'EOF' > /tmp/otlp_span.json
+import os, time, json
+trace_id, span_id = os.urandom(16).hex(), os.urandom(8).hex()
+now = time.time_ns()
+print(json.dumps({"resourceSpans": [{
+    "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "manual-test"}}]},
+    "scopeSpans": [{"scope": {"name": "manual-test"}, "spans": [{
+        "traceId": trace_id, "spanId": span_id, "name": "manual.test_span",
+        "kind": 1, "startTimeUnixNano": str(now - 50_000_000), "endTimeUnixNano": str(now),
+    }]}],
+}]}))
+EOF
+curl -s -X POST http://localhost:4318/v1/traces \
+  -H "Content-Type: application/json" --data @/tmp/otlp_span.json
+
+# then look it up in Jaeger's query API:
+curl -s "http://localhost:16686/api/traces?service=manual-test" | python3 -m json.tool
+```
+
+A `200 {"partialSuccess":{}}` from the POST plus the span coming back from
+`/api/traces` confirms collector → Jaeger works.
+
+**Metric:**
+
+```sh
+python3 - <<'EOF' > /tmp/otlp_metric.json
+import time, json
+now = time.time_ns()
+print(json.dumps({"resourceMetrics": [{
+    "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "manual-test"}}]},
+    "scopeMetrics": [{"scope": {"name": "manual-test"}, "metrics": [{
+        "name": "manual_test_counter",
+        "sum": {"dataPoints": [{"asInt": "1", "startTimeUnixNano": str(now - 1_000_000_000),
+                                 "timeUnixNano": str(now)}],
+                "aggregationTemporality": 2, "isMonotonic": True},
+    }]}],
+}]}))
+EOF
+curl -s -X POST http://localhost:4318/v1/metrics \
+  -H "Content-Type: application/json" --data @/tmp/otlp_metric.json
+
+# collector exposes it immediately:
+curl -s http://localhost:8889/metrics | grep manual_test_counter
+# Prometheus picks it up on its next 15s scrape:
+curl -s "http://localhost:9090/api/v1/query?query=manual_test_counter_total" | python3 -m json.tool
+```
+
+Note the collector's Prometheus exporter renames metrics on the way out —
+dots become underscores and counters get a `_total` suffix
+(`manual_test_counter` → `manual_test_counter_total`). That's the OTel
+Collector's own convention, not something this repo's config controls, and
+it applies equally to whatever metric names Phase 2's instrumentation
+eventually emits.
+
+## Dashboards
+
+`provisioning/dashboards/boukensha-overview.json` is provisioned
+automatically — no manual Grafana clicking. Panels:
+
+- **LLM request latency (p50 / p95)** — `histogram_quantile` over
+  `boukensha_llm_request_duration_milliseconds_bucket`
+- **Tool error rate** — `boukensha_tool_calls_total{ok="false"}` /
+  `boukensha_tool_calls_total`
+- **Token usage over time** — `boukensha_llm_tokens_total`, by direction
+- **Cost over time** — `boukensha_llm_cost_total`
+- **Active sessions** — `boukensha_sessions_active`
+
+These metric names follow the naming convention laid out in the
+[overview's Metrics table](../../docs/plans/observability/otel_and_logs/00_overview.md#metrics),
+translated through the Collector's dots-to-underscores /
+`_total`-suffix Prometheus-export rules described above. **All panels are
+empty until Phase 1/2 ship instrumentation that actually emits these
+metrics** — that's expected at this stage; if the real emitted names end
+up differing once that code exists, fix the query strings in the
+dashboard JSON, not this stack.
+
+## Troubleshooting
+
+- **Grafana datasource/dashboard missing** — provisioning only runs on
+  container boot. `docker compose restart grafana` re-reads
+  `provisioning/`.
+- **Prometheus target `DOWN`** — check `docker compose logs otel-collector`;
+  the collector must be up and exporting on `:8889` before Prometheus can
+  scrape it (compose's `depends_on` only orders container start, not
+  readiness).
+- **Port already in use** — something else on the host is bound to
+  `3000`/`4317`/`4318`/`8889`/`9090`/`16686`. Either stop that process or
+  edit the `ports:` mappings in `docker-compose.yml` (only the **host**
+  side, left of the `:`, needs to change).

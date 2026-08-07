@@ -1,31 +1,70 @@
 # Named, reusable tool-name glob sets — see docs/plans/tools_policy/
 # permission.md. A task with no tasks.<name>.tools block at all gets zero
-# tools (deny-by-default, Boukensha::Tasks::Base.tool_policy); `role: full`
-# below is what restores today's "sees every tool any configured mcp_servers
-# entry advertises" behavior for the one task that still needs it.
+# tools (deny-by-default, Boukensha::Tasks::Base.tool_policy).
+#
+# `full: ["*"]` is kept only as a manual debugging escape hatch (temporarily
+# point a task's `tools:` at it to see every tool any configured mcp_servers
+# entry advertises) — no task is assigned it by default any more. It grants
+# account-management tools (tbamud__create_character/delete_character) and,
+# whenever the optional `filesystem:` server is up, every fs__* file/
+# directory tool too — none of which any current task should have.
+#
+# Roles for the Planner/Player/Judge agentic loop (docs/plans/agent_loop/
+# orchestrator.md, worker.md, evaluator.md):
+#   player   -> gameplay    every tbamud__* MUD command except the two
+#               account-management ones (create_character/delete_character —
+#               a playing character has no legitimate reason to create or
+#               delete a character mid-session), and explicitly nothing
+#               outside tbamud__* — no fs__* file/directory tools, even if
+#               the optional `filesystem:` server below is running.
+#   planner  -> (no tools)  pure reasoning over the goal/plan, see tasks.planner
+#               below — never a `role:` here, so it stays deny-by-default
+#               even if a role gets added to this block later by accident.
+#   judge    -> inspector   read-only fact-checking (Tasks::Judge, Phase 3) —
+#               can look/examine/query room_knowledge, never
+#               move/attack/quit/give.
+#   (navigator is reserved for a possible future Tasks::Navigator — deferred
+#   to v2, not currently assigned to any task.)
 tool_roles:
   full: ["*"]
+  gameplay: ["tbamud__*"]
   navigator: ["tbamud__move"]
   inspector: [tbamud__look, tbamud__shop, tbamud__consume, tbamud__examine, tbamud__info_self,
              tbamud__info_world, tbamud__consider, tbamud__diagnose,
              room_knowledge]
 
 tasks:
-  # player:
-  #   provider: anthropic
-  #   model: claude-haiku-4-5
-  #   prompt_override:
-  #     system: true
+  # Tasks::Planner — deliberately NO tools: block. Pure reasoning over the
+  # goal (and, on a replan, the prior plan + Player transcript tail); a
+  # tools: block here would be a bug, not a feature — see orchestrator.md
+  # §3 ("no `tools:` block in its settings.yaml entry").
+  planner:
+    provider: openai
+    enabled: true
+    model: gpt-5.5
+    max_output_tokens: 512
+  # Tasks::Judge — read-only checkpoint evaluator (docs/plans/agent_loop/
+  # evaluator.md). role: inspector reuses the same glob set above; Registry
+  # silently drops anything it denies, so this is the only place
+  # move/attack/quit/give need to be kept out of the Judge's reach.
+  # max_iterations is deliberately small ("check a couple of facts, then
+  # decide" — Tasks::Judge::DEFAULT_MAX_ITERATIONS falls back to 5 even if
+  # this key is omitted).
+  judge:
+    provider: openai
+    model: gpt-5.5
+    max_output_tokens: 400
+    max_iterations: 5
+    tools:
+      role: inspector
   player:
     provider: openai
     model: gpt-5.4-mini
     prompt_override:
       system: true
-    # tools:
-      # role: full
     tools:
-      role: inspector
-      allow: [tbamud__move]  
+      role: gameplay
+      deny: [tbamud__create_character, tbamud__delete_character]
   # log_viz's background content-classification subtask (ContentFact —
   # docs/plans/observability/room_world_inspector.md §1), read by
   # LogViz::Settings, NOT by the boukensha gem — log_viz is a separate Ruby
@@ -39,6 +78,7 @@ tasks:
   # `OLLAMA_HOST` env var still overrides it if set (useful when log_viz
   # and Ollama don't share a network namespace, e.g. cross-VM/WSL setups).
   content_fact:
+    enabled: true
     provider: ollama
     model: gemma4
     # host: http://localhost:11434
