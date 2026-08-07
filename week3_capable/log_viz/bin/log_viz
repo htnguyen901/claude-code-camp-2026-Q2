@@ -1,8 +1,16 @@
 #!/usr/bin/env ruby
 
-require_relative "../lib/log_viz/app"
+if ARGV.include?("--mcp")
+  # world_knowledge.md §4: the room_knowledge/route_to MCP server needs
+  # nothing from the web app — no Sinatra/Puma dependency at runtime for
+  # this path, so app.rb (and everything it requires) is never loaded here.
+  require_relative "../lib/log_viz/mcp_server"
+  LogViz::McpServer.new.run
+else
+  require_relative "../lib/log_viz/app"
 
-LogViz::App.run!(
-  port: (ENV["PORT"] || 4567).to_i,
-  bind: ENV.fetch("BIND", "localhost")
-)
+  LogViz::App.run!(
+    port: (ENV["PORT"] || 4567).to_i,
+    bind: ENV.fetch("BIND", "localhost")
+  )
+end

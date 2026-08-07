@@ -17,9 +17,14 @@
 #               delete a character mid-session), and explicitly nothing
 #               outside tbamud__* — no fs__* file/directory tools, even if
 #               the optional `filesystem:` server below is running.
-#   planner  -> (no tools)  pure reasoning over the goal/plan, see tasks.planner
-#               below — never a `role:` here, so it stays deny-by-default
-#               even if a role gets added to this block later by accident.
+#   planner  -> reasoning over the goal/plan, see tasks.planner below.
+#               Configured here to reuse `inspector` — same read-only tools
+#               the Judge gets — so it can check room_knowledge/look before
+#               committing to a plan. Omitting `tools:` entirely (as this
+#               block used to) is equally valid and denies everything by
+#               default, per Tasks::Base.tool_policy; nothing in code
+#               special-cases "planner" to force that, so whatever role is
+#               granted here is what it actually gets, same as any task.
 #   judge    -> inspector   read-only fact-checking (Tasks::Judge, Phase 3) —
 #               can look/examine/query room_knowledge, never
 #               move/attack/quit/give.
@@ -28,21 +33,34 @@
 tool_roles:
   full: ["*"]
   gameplay: ["tbamud__*"]
-  navigator: ["tbamud__move"]
+  navigator: [tbamud__move, world__room_knowledge, world__route_to]
+  # room_knowledge -> world__room_knowledge, plus world__route_to
+  # (docs/plans/world_knowledge/world_knowledge.md): both now come from
+  # the log-viz MCP server below, same prefix__name convention as
+  # tbamud__* — room_knowledge stopped being a locally-registered
+  # exception once it became an MCP server too.
   inspector: [tbamud__look, tbamud__shop, tbamud__consume, tbamud__examine, tbamud__info_self,
              tbamud__info_world, tbamud__consider, tbamud__diagnose,
-             room_knowledge]
+             world__room_knowledge, world__route_to]
 
 tasks:
-  # Tasks::Planner — deliberately NO tools: block. Pure reasoning over the
-  # goal (and, on a replan, the prior plan + Player transcript tail); a
-  # tools: block here would be a bug, not a feature — see orchestrator.md
-  # §3 ("no `tools:` block in its settings.yaml entry").
+  # Tasks::Planner — reasons over the goal (and, on a replan, the prior
+  # plan + Player transcript tail). `tools:` here works exactly like it
+  # does for judge/player below — Boukensha.run_planner reads it through
+  # Tasks::Base.tool_policy and reuses the Player's already-connected Tool
+  # objects (see reuse_registered_tools in lib/boukensha.rb), so `role:
+  # inspector` really does let it dispatch look/room_knowledge while
+  # planning. Delete this `tools:` block entirely if you want the Planner
+  # back to pure reasoning with zero tools — that's still the default
+  # when it's omitted, just no longer the only option. See
+  # orchestrator.md §3.
   planner:
     provider: openai
     enabled: true
     model: gpt-5.5
     max_output_tokens: 512
+    tools:
+      role: inspector
   # Tasks::Judge — read-only checkpoint evaluator (docs/plans/agent_loop/
   # evaluator.md). role: inspector reuses the same glob set above; Registry
   # silently drops anything it denies, so this is the only place
@@ -154,15 +172,35 @@ mcp_servers:
     prefix:   fs
     required: false
 
-# log_viz / room_knowledge (docs/plans/observability/room_world_inspector.md)
+  # world_knowledge.md: room_knowledge/route_to, hosted by log_viz (which
+  # already owns world_map.sqlite3 and its WorldMap query logic) instead of
+  # being a boukensha-side hand-written tool that duplicated log_viz's own
+  # SQL. `log_viz` must be on PATH (`gem build log_viz.gemspec && gem
+  # install ./log_viz-*.gem` from week3_capable/log_viz, the same one-time
+  # per-machine step `mud-manager` already needs — see that gem's README).
+  #
+  # WORLD_MAP_PLAYER is intentionally blank, same posture as mud.env's
+  # MUD_NAME/MUD_PASSWORD above: Boukensha.overlay_player_credentials fills
+  # it in at boot from `boukensha --player NAME`'s profile. Omitting
+  # --player runs world__room_knowledge/world__route_to in their historical
+  # un-scoped (whole-map) mode, not an error.
+  log-viz:
+    command: log_viz
+    args:    [--mcp]
+    prefix:  world          # room_knowledge reaches the agent as world__room_knowledge
+    env:
+      WORLD_MAP_PLAYER:
+
+# log_viz / world__room_knowledge (docs/plans/observability/
+# room_world_inspector.md, docs/plans/world_knowledge/world_knowledge.md)
 # — provider/model/host for the content-fact subtask now live in
 # `tasks.content_fact` above. What's left is still environment-only, since
 # it's per-machine path/network config rather than a "task" setting:
 #
 #   LOG_VIZ_WORLD_MAP_DB  default: <repo root>/.boukensha/world_map.sqlite3
 #     SQLite file log_viz's WorldMap reads/writes, and the same file
-#     week2_observability/ruby/13_room_inspector's room_knowledge tool
-#     opens read-only.
+#     `log_viz --mcp` (mcp_servers.log-viz above) opens read-only for
+#     world__room_knowledge/world__route_to.
 #   LOG_VIZ_SESSIONS_DIR  default: <repo root>/.boukensha/sessions
 #   OLLAMA_HOST           default: http://localhost:11434 (or tasks.content_fact.host above)
 #     Must be reachable from wherever log_viz runs, which may not be the

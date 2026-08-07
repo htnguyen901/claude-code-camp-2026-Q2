@@ -46,6 +46,16 @@ module LogViz
       [0.6, 0.6], [-0.6, -0.6], [0.6, -0.6], [-0.6, 0.6]
     ].freeze
 
+    # `rooms.exits` stores CircleMUD's raw single-letter tokens; `edges.via`
+    # (for an actual `move`) stores the full word a caller passed as
+    # `direction:`. #connections_for/#route_to resolve both onto this same
+    # vocabulary — DIRECTION_DELTA's keys — so a letter exit and the `edges`
+    # row it was walked through land in one output row instead of two.
+    LETTER_TO_DIRECTION = {
+      "n" => "north", "s" => "south", "e" => "east",
+      "w" => "west",  "u" => "up",    "d" => "down"
+    }.freeze
+
     # Tool names (post `__` prefix strip) whose result is a targeted
     # inspection rather than a room-wide look — `examine <target>` always,
     # `look` only when called with a `target` (a bare `look` is handled by
@@ -98,6 +108,38 @@ module LogViz
       (
         SELECT ex.result_text FROM examinations ex
         WHERE ex.room_title = rc.room_title
+          AND (LOWER(COALESCE(cf.subject, rc.content)) LIKE '%' || LOWER(ex.subject) || '%'
+               OR LOWER(ex.subject) LIKE '%' || LOWER(COALESCE(cf.subject, rc.content)) || '%')
+        ORDER BY ex.at DESC LIMIT 1
+      )
+    SQL
+
+    # Player-scoped variants of the two SQL fragments above, for
+    # #room_knowledge (ported from the former Boukensha::WorldKnowledge,
+    # which duplicated these — see docs/plans/world_knowledge/
+    # world_knowledge.md §3). Additionally requires the examinations row to
+    # have come from one of `player`'s own sessions
+    # (docs/plans/observability/players/multiple_concurrent_players.md §2)
+    # — different characters have different knowledge, even of the same
+    # room. #discoveries/#unexamined_in/#examined_in keep using the
+    # player-agnostic constants above; only #room_knowledge takes a player:.
+    PLAYER_EXAMINED_EXISTS_SQL = <<~SQL.strip.freeze
+      EXISTS (
+        SELECT 1 FROM examinations ex
+        JOIN sessions s ON s.session_id = ex.session_id
+        WHERE ex.room_title = rc.room_title
+          AND s.player = ?
+          AND (LOWER(COALESCE(cf.subject, rc.content)) LIKE '%' || LOWER(ex.subject) || '%'
+               OR LOWER(ex.subject) LIKE '%' || LOWER(COALESCE(cf.subject, rc.content)) || '%')
+      )
+    SQL
+
+    PLAYER_EXAMINATION_RESULT_SQL = <<~SQL.strip.freeze
+      (
+        SELECT ex.result_text FROM examinations ex
+        JOIN sessions s ON s.session_id = ex.session_id
+        WHERE ex.room_title = rc.room_title
+          AND s.player = ?
           AND (LOWER(COALESCE(cf.subject, rc.content)) LIKE '%' || LOWER(ex.subject) || '%'
                OR LOWER(ex.subject) LIKE '%' || LOWER(COALESCE(cf.subject, rc.content)) || '%')
         ORDER BY ex.at DESC LIMIT 1
@@ -244,16 +286,32 @@ module LogViz
     # before being retried (see DEFAULT_CONTENT_FACT_RETRY_COOLDOWN). Pass
     # 0 for "always retry immediately" — deterministic tests, or a one-off
     # script where a human explicitly asked to try again right now.
+    # readonly: true opens `db_path` with SQLite's own readonly flag,
+    # creates/migrates nothing, and never starts the content-fact worker —
+    # the posture `LogViz::McpServer` needs (docs/plans/world_knowledge/
+    # world_knowledge.md §4): read #room_knowledge/#route_to/#connections_for
+    # concurrently with the writer process's own connection (WAL makes this
+    # safe), without a second process racing it to create the schema or
+    # spawning a redundant background classifier. A missing file degrades to
+    # every read accessor returning its empty shape rather than raising —
+    # "log_viz has never run yet" must never break the calling agent's turn.
     def initialize(sessions_dir:, db_path: nil, content_fact_worker: true, content_fact_extractor: nil,
                    description_mention_extractor: nil,
-                   content_fact_retry_cooldown: DEFAULT_CONTENT_FACT_RETRY_COOLDOWN)
+                   content_fact_retry_cooldown: DEFAULT_CONTENT_FACT_RETRY_COOLDOWN,
+                   readonly: false)
       @sessions_dir = sessions_dir
       @db_path      = db_path || File.join(File.dirname(sessions_dir), "world_map.sqlite3")
       @mutex        = Mutex.new
+      @content_fact_stop = true
+
+      if readonly
+        open_db_readonly!
+        return
+      end
+
       @content_fact_extractor         = content_fact_extractor || default_content_fact_extractor
       @description_mention_extractor  = description_mention_extractor || default_description_mention_extractor
       @content_fact_retry_cooldown    = content_fact_retry_cooldown
-      @content_fact_stop              = true
       FileUtils.mkdir_p(File.dirname(@db_path))
       open_db!
       start_content_fact_worker! if content_fact_worker
@@ -536,6 +594,150 @@ module LogViz
       end
     end
 
+    # ---------- agent-facing read accessors (docs/plans/world_knowledge/world_knowledge.md) ----------
+
+    # Every exit `room_title` is known to have, resolved against `edges` —
+    # world_knowledge.md §1 (room_connections.md §1's original design, with
+    # its one open question resolved below):
+    #
+    #   connections_for("Market Square") ->
+    #     [{ direction: "north", to: "Temple Square", via: ["north"] },
+    #      { direction: "east",  to: nil,             via: [] },
+    #      { direction: "flee",  to: "The Dump",       via: ["flee"] }]
+    #
+    # Every letter in `rooms.exits` gets exactly one output row (`to: nil`
+    # is a first-class "listed, never walked" state, not an absence). A
+    # direction-less arrival (`enter`/`leave`/`flee`, or a bare `look` —
+    # #record_visit's `via` for a location-tool result with no `direction`
+    # arg) that isn't any listed exit letter gets its own row too, tagged
+    # with its raw `via` string as `direction`.
+    #
+    # Grouping key is #direction_key_for_via, not the raw `edges` row: two
+    # `edges` rows can share a resolved direction (e.g. a `direction:
+    # "north"` move and a same-destination arrival whose `via` also happens
+    # to normalize to "north") and collapse into one row, with both `via`
+    # strings collected. This does NOT collapse the specific duplicate
+    # room_connections.md §1 flagged (`("Market Square", "south", ...)` vs.
+    # `("Market Square", "look", ...)`, believed to be a tool_call/
+    # tool_result mispairing — see #pop_pending_call) — "look" has no
+    # compass meaning to normalize onto "south" by, so that pair still
+    # surfaces as two rows pointing at the same `to`. Flagged here rather
+    # than silently claimed as solved.
+    #
+    # No reverse-edge inference: `to` stays `nil` for a direction just
+    # because the *destination's* exits happen to lead back — CircleMUD
+    # exits aren't guaranteed symmetric, so this only ever reports
+    # directions actually walked *from* `room_title` itself.
+    def connections_for(room_title)
+      return [] unless @db
+
+      exits = JSON.parse(@db.get_first_value("SELECT exits FROM rooms WHERE title = ?", [room_title]) || "[]")
+      edge_rows = @db.execute("SELECT via, to_title FROM edges WHERE from_title = ? ORDER BY rowid", [room_title])
+
+      groups = {}
+      edge_rows.each do |via, to_title|
+        group = (groups[direction_key_for_via(via)] ||= { to: nil, via: [] })
+        group[:to] ||= to_title
+        group[:via] << via unless group[:via].include?(via)
+      end
+
+      exit_directions = exits.map { |letter| LETTER_TO_DIRECTION[letter] || letter }
+      exit_directions.each { |dir| groups[dir] ||= { to: nil, via: [] } }
+
+      # Exit letters first (in `rooms.exits`' own order), then any
+      # edges-only directions (flee/enter/leave/look) not already covered,
+      # alphabetically — deterministic without claiming a real ordering
+      # exists for the latter.
+      (exit_directions | groups.keys.sort).map do |dir|
+        { direction: dir, to: groups[dir][:to], via: groups[dir][:via] }
+      end
+    rescue SQLite3::Exception => e
+      warn "[LogViz::WorldMap] connections_for query failed: #{e.message}"
+      []
+    end
+
+    # Shortest (hop-count, unweighted) direction sequence from `from` to
+    # `to` — world_knowledge.md §2 (room_connections.md §4, un-deferred):
+    #
+    #   route_to(from: "Market Square", to: "Temple Bakery", player: "Alice") ->
+    #     { from:, to:, hops: [{ direction: "north", to: "Temple Square" },
+    #                           { direction: "east",  to: "Temple Bakery" }] }
+    #     # or, if unreachable from what this player has discovered:
+    #     { from:, to:, hops: nil, note: "no known route" }
+    #
+    # `player` non-nil scopes the graph to edges whose `from_title` AND
+    # `to_title` are both rooms that player's own sessions have visited
+    # (same `visits`/`sessions` join #room_knowledge uses) — "the tool can
+    # only read the area the Player have been to," per the plan. A route
+    # that would cross through a room only a *different* character has
+    # visited is not returned, even if the unscoped map (`player: nil`) has
+    # it — a stated limitation, not a bug. `player: nil` is unscoped (the
+    # whole map), the same backward-compatible default #room_knowledge uses
+    # for a run launched without --player.
+    #
+    # `from == to` returns `hops: []`. Never raises — a missing database, an
+    # unknown room, or any SQLite error all degrade to `hops: nil` with an
+    # explanatory `note`, the same posture #room_knowledge already commits
+    # to (an observability/navigation aid must never break the caller's
+    # turn).
+    def route_to(from:, to:, player: nil)
+      return { from: from, to: to, hops: [] } if from == to
+      return no_route(from, to) unless @db
+
+      if player
+        known = rooms_visited_by(player)
+        return no_route(from, to, "you have not visited #{from.inspect}") unless known.include?(from)
+        return no_route(from, to, "you have not visited #{to.inspect}") unless known.include?(to)
+      end
+
+      hops = bfs_hops(build_adjacency(player), from, to)
+      hops ? { from: from, to: to, hops: hops } : no_route(from, to)
+    rescue SQLite3::Exception => e
+      warn "[LogViz::WorldMap] route_to query failed: #{e.message}"
+      no_route(from, to)
+    end
+
+    # Agent-facing room summary — world_knowledge.md §3, ported from the
+    # former Boukensha::WorldKnowledge#room_knowledge (which duplicated
+    # log_viz's own EXAMINED_EXISTS_SQL/EXAMINATION_RESULT_SQL — collapsed
+    # here instead of moved sideways) plus `connections` from
+    # #connections_for:
+    #
+    #   room_knowledge(room_title:, player: "Alice") ->
+    #     { room_title:, examined: [{ subject:, result: }, ...],
+    #       unexamined: [...subjects], connections: [{direction:, to:, via:}, ...] }
+    #     # or, if `player` has never visited this room:
+    #     { room_title:, examined: [], unexamined: [], connections: [],
+    #       note: "you have not been here" }
+    #
+    # `player: nil` is the historical, un-scoped, whole-map-visible
+    # behavior (a run launched without --player, or a session logged before
+    # per-player tracking existed). A non-nil player is scoped two ways —
+    # see multiple_concurrent_players.md §2: (1) a room that player's own
+    # sessions have never visited answers "you have not been here" (and,
+    # deliberately, no `connections` either — a room's exits are something
+    # you only know by having stood in it); (2) within a visited room,
+    # "examined" only counts examinations from that player's own sessions.
+    #
+    # Never raises: see #route_to's comment — same contract.
+    def room_knowledge(room_title:, player: nil)
+      return empty_room_knowledge(room_title) unless @db
+
+      if player && !player_visited_room?(room_title, player)
+        return empty_room_knowledge(room_title).merge(note: "you have not been here")
+      end
+
+      {
+        room_title: room_title,
+        examined: examined_subjects_for(room_title, player),
+        unexamined: subjects_in_room(room_title, examined: false, player: player),
+        connections: connections_for(room_title)
+      }
+    rescue SQLite3::Exception => e
+      warn "[LogViz::WorldMap] room_knowledge query failed: #{e.message}"
+      empty_room_knowledge(room_title)
+    end
+
     private
 
     def present?(value)
@@ -584,15 +786,116 @@ module LogViz
       [where.join(" AND "), params]
     end
 
-    def subjects_in_room(room_title, examined:)
+    # player: nil (the default, and #unexamined_in/#examined_in's only
+    # caller shape) keeps this byte-identical to before player-scoping
+    # existed. A non-nil player (#room_knowledge only) additionally
+    # requires the examination to have come from that player's own
+    # sessions — see PLAYER_EXAMINED_EXISTS_SQL.
+    def subjects_in_room(room_title, examined:, player: nil)
+      exists_sql, exists_params = examined_exists_sql(player)
       sql = <<~SQL
         SELECT DISTINCT cf.subject
         FROM room_contents rc
         JOIN content_facts cf ON cf.raw = rc.content
         WHERE rc.room_title = ? AND cf.subject IS NOT NULL
-          AND #{examined ? '' : 'NOT '}#{EXAMINED_EXISTS_SQL}
+          AND #{examined ? '' : 'NOT '}#{exists_sql}
       SQL
-      @db.execute(sql, [room_title]).map { |r| r[0] }
+      @db.execute(sql, [room_title] + exists_params).map { |r| r[0] }
+    end
+
+    # Companion to #subjects_in_room(examined: true) that also returns each
+    # subject's examination result text (#room_knowledge's `examined`
+    # field) — the point of tracking "examined" at all is that the room's
+    # answer can be a real clue worth recalling without spending a turn
+    # re-examining it.
+    def examined_subjects_for(room_title, player)
+      result_sql, result_params = examination_result_sql(player)
+      exists_sql, exists_params = examined_exists_sql(player)
+      sql = <<~SQL
+        SELECT DISTINCT cf.subject, #{result_sql}
+        FROM room_contents rc
+        JOIN content_facts cf ON cf.raw = rc.content
+        WHERE rc.room_title = ? AND cf.subject IS NOT NULL
+          AND #{exists_sql}
+      SQL
+      params = result_params + [room_title] + exists_params
+      @db.execute(sql, params).map { |subject, result| { subject: subject, result: result } }
+    end
+
+    def examined_exists_sql(player)
+      player ? [PLAYER_EXAMINED_EXISTS_SQL, [player]] : [EXAMINED_EXISTS_SQL, []]
+    end
+
+    def examination_result_sql(player)
+      player ? [PLAYER_EXAMINATION_RESULT_SQL, [player]] : [EXAMINATION_RESULT_SQL, []]
+    end
+
+    def player_visited_room?(room_title, player)
+      !!@db.get_first_value(
+        "SELECT 1 FROM visits v JOIN sessions s ON s.session_id = v.session_id " \
+        "WHERE v.room_title = ? AND s.player = ? LIMIT 1",
+        [room_title, player]
+      )
+    end
+
+    def empty_room_knowledge(room_title)
+      { room_title: room_title, examined: [], unexamined: [], connections: [] }
+    end
+
+    # Shared by #connections_for and #route_to's adjacency so a `route_to`
+    # hop's `direction` matches what #connections_for/#room_knowledge would
+    # report for the same edge — world_knowledge.md §2. A `via` that's
+    # already one of DIRECTION_DELTA's compass words normalizes to itself
+    # (lowercased); anything else (a bare tool name — flee/enter/leave/
+    # look) is its own direction, verbatim.
+    def direction_key_for_via(via)
+      v = via.to_s
+      DIRECTION_DELTA.key?(v.downcase) ? v.downcase : v
+    end
+
+    # Unweighted, directed adjacency list built from `edges` — exactly the
+    # graph #connections_for reads, one row per (from, direction, to).
+    # player non-nil restricts both endpoints of every edge to that
+    # player's own rooms_visited_by set (see #route_to's comment on why
+    # that's "routes through what *I've* seen," not the whole map).
+    def build_adjacency(player)
+      rows = @db.execute("SELECT from_title, via, to_title FROM edges")
+      if player
+        visited = rooms_visited_by(player)
+        rows = rows.select { |from_title, _via, to_title| visited.include?(from_title) && visited.include?(to_title) }
+      end
+      rows.each_with_object(Hash.new { |h, k| h[k] = [] }) do |(from_title, via, to_title), adj|
+        adj[from_title] << [direction_key_for_via(via), to_title]
+      end
+    end
+
+    # Plain BFS over `adjacency` — hop-count shortest path, ties broken by
+    # edge-iteration order (no weighting by danger/distance). Returns nil
+    # when `to` isn't reachable from `from` at all (including `from` having
+    # no known outgoing edges).
+    def bfs_hops(adjacency, from, to)
+      return nil unless adjacency.key?(from)
+
+      seen  = { from => true }
+      queue = [[from, []]]
+      until queue.empty?
+        room, path = queue.shift
+        adjacency[room].each do |direction, dest|
+          next if seen[dest]
+
+          hop = { direction: direction, to: dest }
+          return path + [hop] if dest == to
+
+          seen[dest] = true
+          queue << [dest, path + [hop]]
+        end
+      end
+      nil
+    end
+
+    def no_route(from, to, reason = nil)
+      note = reason ? "no known route (#{reason})" : "no known route"
+      { from: from, to: to, hops: nil, note: note }
     end
 
     # Distinct content_facts.subject across a given set of rooms — the
@@ -628,6 +931,21 @@ module LogViz
       backup = "#{@db_path}.corrupt-#{Time.now.to_i}"
       File.rename(@db_path, backup) if File.exist?(@db_path)
       connect!
+    end
+
+    # readonly: true's connection path (see #initialize) — no schema/
+    # migration, no write access, no worker thread. A not-yet-existing file
+    # ("log_viz has never run yet") leaves @db nil rather than raising;
+    # every read accessor above checks `unless @db` and degrades to its
+    # empty shape instead.
+    def open_db_readonly!
+      return unless File.exist?(@db_path)
+
+      @db = SQLite3::Database.new(@db_path, readonly: true)
+      @db.busy_timeout = 5000
+    rescue SQLite3::Exception => e
+      warn "[LogViz::WorldMap] #{@db_path} unreadable in readonly mode (#{e.message})"
+      @db = nil
     end
 
     def connect!

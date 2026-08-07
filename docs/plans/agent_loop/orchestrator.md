@@ -106,12 +106,13 @@ module Boukensha
 end
 ```
 
-**No `tools:` block in its `settings.yaml` entry.** `Tasks::Base.tool_policy`
-returns `ToolPolicy.new(allow: [])` — deny-everything — when a task has no
-`tools:` block (`tasks/base.rb:62-71`, and see
-`docs/plans/tools_policy/permission.md`'s "Default / fail-safe"). That's
-exactly "pure reasoning over the transcript + current plan, no tools" for
-free — nothing to configure, nothing to remember not to grant.
+**No `tools:` block in its `settings.yaml` entry, by default.**
+`Tasks::Base.tool_policy` returns `ToolPolicy.new(allow: [])` —
+deny-everything — when a task has no `tools:` block (`tasks/base.rb:62-71`,
+and see `docs/plans/tools_policy/permission.md`'s "Default / fail-safe").
+That's "pure reasoning over the transcript + current plan, no tools" for
+free when nobody configures otherwise — see the correction below for why
+this is now a default rather than a hard rule.
 
 `settings.yaml` addition:
 
@@ -130,6 +131,49 @@ plain text plan, stored verbatim into `ctx.plan`. No structured-output
 parsing needed here (unlike the Judge — see `evaluator.md` — the Planner's
 output is consumed only by a human-readable prompt block, not branched on
 programmatically).
+
+**Correction (2026-08-07):** "no `tools:` block" above was implemented as a
+hardcoded rule, not just a default — `Boukensha.run_planner` ignored
+`tasks.planner.tools` entirely and always called the model with `tools: []`
+via a bare `Client#call`, never `tool_policy`. That's a real bug against
+this project's actual policy (`docs/plans/tools_policy/permission.md`):
+every task's permissions are supposed to live in `settings.yaml`, not be
+special-cased in agent code. Fixed by making `run_planner` mirror
+`run_judge` exactly — `Tasks::Base.tool_policy(task_settings, ...)` builds
+its `ToolPolicy` from `tasks.planner.tools` like any other task, a
+throwaway `Registry` reuses the Player's already-connected Tool objects
+(`Boukensha.reuse_registered_tools`, the renamed and now-shared
+`reuse_inspector_tools`) when a `player_context:` is passed, and the call
+runs through a real (if usually one-iteration) `Agent#run` loop instead of
+a bare `Client#call`, so a granted tool can actually be dispatched, not
+just listed. The "§5 Observability" bare-`Client#call` claim below is
+stale for the same reason — see its own correction. Deny-by-default when
+`tools:` is omitted still holds, but now purely because
+`Tasks::Base.tool_policy` returns `ToolPolicy.new(allow: [])` for an absent
+block — the same generic mechanism every task gets, not a Planner-specific
+carve-out anywhere in `lib/boukensha.rb`.
+
+**Third correction (2026-08-07, supersedes the one directly above):**
+`reuse_registered_tools`/`reuse_inspector_tools` is gone — it re-registered
+the *Player's* already-filtered `Tool` objects onto the Judge's/Planner's
+own `Registry`, which meant a task's effective tool set was bounded by
+`intersection(tasks.<name>.tools, tasks.player.tools)`, not just
+`tasks.<name>.tools`: a `role: inspector` grant (e.g. `world__room_knowledge`)
+was unreachable by the Judge/Planner whenever the Player's own
+`role: gameplay` never registered it first. Fixed per
+[`docs/plans/tools_policy/mcp_connection_sharing.md`](../tools_policy/mcp_connection_sharing.md):
+connecting to an MCP server (spawn + handshake, exactly once per server per
+session — the real constraint that made the old hack exist, since `mud` is
+a stateful login) is now split from registering a task's own filtered view
+of that connection's full catalog. `Boukensha::McpConnections.connect(cfg,
+servers:)` does the former, once, at whichever call site starts a session
+(`Boukensha.run`/`.repl`/`Session.play`); `run_judge`/`run_planner` take an
+`mcp:` kwarg (that same `McpConnections`, or `nil`) in place of
+`player_context:`, and call `mcp&.register(registry)` — a fresh pass of
+`Registry#tool`, and therefore that task's *own* `ToolPolicy`, over the
+already-fetched catalog, independent of what the Player's own policy
+allows. Player, Judge, and Planner are siblings now, not a hierarchy where
+the latter two can only borrow what the first already claimed.
 
 ## 4. The session driver
 
@@ -222,6 +266,18 @@ it has no Model usage breakdown at all. See
 — genuinely new plumbing, on the `log_viz`/`Logger` side, not on the
 Planner/Judge side this section is otherwise about.
 
+**Correction (2026-08-07):** "likely a bare `Client#call` + `PromptBuilder`,
+not a full `Agent#run` loop, since it makes exactly one call with no tools
+to dispatch" is stale — see §3's correction of the same date.
+`Boukensha.run_planner` now always runs through `Agent#run`, the same as
+`run_judge`; `task_name: "planner"` is passed to `Agent.new` the normal way
+instead of being threaded through by hand on a bare `Client#call`/
+`logger&.request`/`logger&.response` sequence. Behavior is unchanged for
+the common case (no `tasks.planner.tools` configured still means exactly
+one round trip, since an empty `Registry` never returns a `tool_use` stop
+reason) — this only changes what happens once an operator actually grants
+the Planner a tool.
+
 ## Acceptance criteria
 
 - With no `tasks.planner` block in `settings.yaml`, nothing changes for
@@ -233,8 +289,21 @@ Planner/Judge side this section is otherwise about.
 - A `Tasks::Planner` call with a goal produces plan text that shows up in
   the next Player iteration's `system` payload (spot-check a logged request
   payload) without appearing as a `Context#messages` entry.
-- Planner's `tool_policy` denies every tool name — assert this the same way
-  `test_tasks_base_tool_policy.rb` already does for deny-by-default.
+- With no `tools:` block configured, Planner's `tool_policy` denies every
+  tool name — assert this the same way `test_tasks_base_tool_policy.rb`
+  already does for deny-by-default. **(2026-08-07):** additionally, with a
+  `tasks.planner.tools` block configured and a `player_context:` passed,
+  the Planner must be able to actually dispatch a granted tool, and must
+  still be denied one outside its configured role even when the Player's
+  live context has it registered — see `test_run_planner.rb`'s
+  `test_a_configured_role_lets_the_planner_actually_dispatch_a_tool` /
+  `test_a_tool_outside_the_configured_role_is_never_dispatchable_by_the_planner`.
+  **(2026-08-07, later the same day):** `player_context:` above is stale —
+  see §3's third correction. Read it as `mcp:` (a `Boukensha::McpConnections`),
+  and "the Player's live context has it registered" as "the shared MCP
+  connections' full catalog includes it" — the acceptance criterion itself
+  (own-role grants dispatchable, out-of-role grants denied, independent of
+  any other task) is unchanged, only what's being reused is.
 
 ## Deferred / out of scope here
 

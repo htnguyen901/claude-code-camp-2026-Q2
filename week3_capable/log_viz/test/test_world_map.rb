@@ -838,4 +838,195 @@ class TestWorldMap < Minitest::Test
     tagged = wm.sessions.find { |s| s[:session_id] == "noir-s1" }
     assert_equal "noir", tagged[:player]
   end
+
+  # ---- connections_for / route_to / room_knowledge (docs/plans/world_knowledge/world_knowledge.md) ----
+
+  def test_connections_for_resolves_walked_exits_and_flags_untraveled_ones
+    write_lines(File.join(@sessions_dir, "s1.jsonl"), [
+      *move_lines(direction: "north", title: "Room A", exits: %w[s e]),
+      *move_lines(direction: "east", title: "Room B", exits: %w[w])
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    assert_equal(
+      [{ direction: "south", to: nil, via: [] }, { direction: "east", to: "Room B", via: ["east"] }],
+      wm.connections_for("Room A")
+    )
+  end
+
+  def test_connections_for_includes_direction_less_arrivals_not_listed_as_exits
+    write_lines(File.join(@sessions_dir, "s1.jsonl"), [
+      *move_lines(direction: "north", title: "Room A", exits: %w[s]),
+      event(phase: "tool_call", name: "tbamud__flee", args: {}),
+      event(phase: "tool_result", name: "tbamud__flee", result: room_echo("Room C", %w[n]))
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    assert_includes wm.connections_for("Room A"), { direction: "flee", to: "Room C", via: ["flee"] }
+  end
+
+  # room_connections.md §1's flagged nuance: a bare `look` issued right
+  # after a `move` can get attributed as its own edge to the same
+  # destination (believed to be the tool_call/tool_result mispairing
+  # #pop_pending_call documents). #connections_for's resolved decision
+  # (world_knowledge.md §1) groups by resolved direction, not raw `edges`
+  # row — but "look" has no compass meaning to normalize onto "south" by,
+  # so this specific duplicate still surfaces as two rows pointing at the
+  # same room, not one. Documented here as the known limitation it is.
+  def test_connections_for_does_not_collapse_a_mispaired_look_duplicate
+    write_lines(File.join(@sessions_dir, "s1.jsonl"), [
+      *move_lines(direction: "north", title: "Market Square", exits: %w[s]),
+      *move_lines(direction: "south", title: "Common Square", exits: %w[n])
+    ])
+
+    wm = build_map
+    wm.refresh!
+    wm.instance_variable_get(:@db).execute(
+      "INSERT INTO edges(from_title, via, to_title) VALUES (?, ?, ?)",
+      ["Market Square", "look", "Common Square"]
+    )
+
+    connections = wm.connections_for("Market Square")
+    assert_includes connections, { direction: "south", to: "Common Square", via: ["south"] }
+    assert_includes connections, { direction: "look", to: "Common Square", via: ["look"] }
+  end
+
+  # The merge #connections_for's grouping DOES perform: two raw `edges`
+  # rows whose `via` strings both resolve to the same direction (here,
+  # differing only in case) collapse into one row, with both raw `via`
+  # strings collected.
+  def test_connections_for_merges_via_strings_that_resolve_to_the_same_direction
+    wm = build_map
+    db = wm.instance_variable_get(:@db)
+    db.execute("INSERT INTO rooms(title, exits, first_seen_at) VALUES (?, ?, ?)",
+               ["Room X", '["s"]', "2026-01-01T00:00:00Z"])
+    db.execute("INSERT INTO edges(from_title, via, to_title) VALUES (?, ?, ?)", ["Room X", "south", "Room Y"])
+    db.execute("INSERT INTO edges(from_title, via, to_title) VALUES (?, ?, ?)", ["Room X", "South", "Room Y"])
+
+    row = wm.connections_for("Room X").find { |c| c[:direction] == "south" }
+    assert_equal "Room Y", row[:to]
+    assert_equal %w[South south], row[:via].sort
+  end
+
+  def test_route_to_returns_the_shortest_hop_sequence
+    write_lines(File.join(@sessions_dir, "s1.jsonl"), [
+      *move_lines(direction: "north", title: "Room A", exits: %w[s e]),
+      *move_lines(direction: "east", title: "Room B", exits: %w[w n]),
+      *move_lines(direction: "north", title: "Room C", exits: %w[s])
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    assert_equal(
+      [{ direction: "east", to: "Room B" }, { direction: "north", to: "Room C" }],
+      wm.route_to(from: "Room A", to: "Room C")[:hops]
+    )
+  end
+
+  def test_route_to_from_equals_to_returns_empty_hops_without_touching_the_db
+    wm = build_map
+    assert_equal [], wm.route_to(from: "Room A", to: "Room A")[:hops]
+  end
+
+  def test_route_to_returns_no_known_route_when_unreachable
+    write_lines(File.join(@sessions_dir, "s1.jsonl"), move_lines(direction: "north", title: "Room A", exits: %w[s]))
+    wm = build_map
+    wm.refresh!
+
+    route = wm.route_to(from: "Room A", to: "Nowhere")
+    assert_nil route[:hops]
+    assert_equal "no known route", route[:note]
+  end
+
+  # route_to's player scoping (world_knowledge.md §2, decision 5): a route
+  # through a room only a *different* character has visited isn't
+  # returned, even though the unscoped map has it.
+  def test_route_to_is_scoped_to_the_players_own_visited_rooms
+    write_lines(File.join(@sessions_dir, "noir-s1.jsonl"), [
+      event(phase: "session_start", player: "noir"),
+      *move_lines(direction: "north", title: "Room A", exits: %w[e]),
+      *move_lines(direction: "east", title: "Room B", exits: %w[w])
+    ])
+    write_lines(File.join(@sessions_dir, "dina-s1.jsonl"), [
+      event(phase: "session_start", player: "dina"),
+      *move_lines(direction: "north", title: "Room A", exits: %w[e]),
+      *move_lines(direction: "east", title: "Room B", exits: %w[w n]),
+      *move_lines(direction: "north", title: "Room C", exits: %w[s])
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    assert_equal 2, wm.route_to(from: "Room A", to: "Room C")[:hops].length, "unscoped sees dina's edge B->C"
+
+    noir_route = wm.route_to(from: "Room A", to: "Room C", player: "noir")
+    assert_nil noir_route[:hops], "noir never visited Room C"
+    assert_match(/Room C/, noir_route[:note])
+
+    dina_route = wm.route_to(from: "Room A", to: "Room C", player: "dina")
+    assert_equal 2, dina_route[:hops].length
+  end
+
+  def test_room_knowledge_includes_connections
+    write_lines(File.join(@sessions_dir, "s1.jsonl"), [
+      *move_lines(direction: "north", title: "Room A", exits: %w[s e]),
+      *move_lines(direction: "east", title: "Room B", exits: %w[w])
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    assert_equal(
+      [{ direction: "south", to: nil, via: [] }, { direction: "east", to: "Room B", via: ["east"] }],
+      wm.room_knowledge(room_title: "Room A")[:connections]
+    )
+  end
+
+  # A room a player hasn't visited stays fully opaque — not just examined/
+  # unexamined, but connections too: exits are something you only know by
+  # having stood in the room.
+  def test_room_knowledge_have_not_been_here_omits_connections_too
+    write_lines(File.join(@sessions_dir, "noir-s1.jsonl"), [
+      event(phase: "session_start", player: "noir"),
+      *move_lines(direction: "north", title: "Room A", exits: %w[s e])
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    assert_equal(
+      { room_title: "Room A", examined: [], unexamined: [], connections: [], note: "you have not been here" },
+      wm.room_knowledge(room_title: "Room A", player: "dina")
+    )
+  end
+
+  # ---- readonly: true (LogViz::McpServer's posture) ----
+
+  def test_readonly_mode_against_a_missing_database_degrades_to_empty_results
+    missing_db = File.join(@tmp_dir, "does-not-exist.sqlite3")
+    wm = LogViz::WorldMap.new(sessions_dir: @sessions_dir, db_path: missing_db, readonly: true)
+
+    assert_equal({ room_title: "Room A", examined: [], unexamined: [], connections: [] },
+                 wm.room_knowledge(room_title: "Room A"))
+    assert_equal({ from: "Room A", to: "Room B", hops: nil, note: "no known route" },
+                 wm.route_to(from: "Room A", to: "Room B"))
+    assert_equal [], wm.connections_for("Room A")
+  end
+
+  def test_readonly_mode_reads_data_a_writer_instance_already_committed
+    write_lines(File.join(@sessions_dir, "s1.jsonl"), move_lines(direction: "north", title: "Room A", exits: %w[s]))
+    writer = build_map
+    writer.refresh!
+
+    reader = LogViz::WorldMap.new(sessions_dir: @sessions_dir, db_path: @db_path, readonly: true)
+    assert_equal 1, reader.rooms.length
+
+    route = reader.route_to(from: "Room A", to: "Room A")
+    assert_equal [], route[:hops]
+  end
 end

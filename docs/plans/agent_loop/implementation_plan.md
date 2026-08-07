@@ -122,6 +122,13 @@ against a sample goal produces plan text; that text, assigned to
 `ctx.plan`, shows up in a subsequent Player request's `system` field
 (spot-check a logged payload) and never appears in `ctx.messages`.
 
+**Correction (2026-08-07):** the "no `Agent#run` loop, bare `Client#call`"
+wiring above shipped as a hardcoded `tools: []`, ignoring
+`tasks.planner.tools` entirely rather than deny-by-default falling out of
+`tool_policy` the way it was supposed to — see
+[`orchestrator.md`](orchestrator.md) §3's correction for the fix
+(`run_planner` now mirrors `run_judge`: `tool_policy` + `Agent#run`).
+
 ## Phase 3 — `Tasks::Judge`
 
 - [`evaluator.md`](evaluator.md) §1: add `Tasks::Judge`
