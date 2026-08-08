@@ -40,7 +40,7 @@
 - Judge kept giving the green light to Continue. Without World Knowledge, Judge does not have significant leverage than the player
 - Cost (Token usage) by Player is growing tremendeously => Need immediate optimization
 
-### 2. Memory / World Knowledge
+### 2. World Knowledge
 A planner/judge or a new subtask to read world knowledge and plan the route => offload movement tools from player to this subagent
 - We have a valid reason to move room_knowledge (to check examination of object in room) to a MCP server to allow porting to Python
   - Extended room_knowledge:
@@ -60,9 +60,29 @@ Tasked with resolve hunger and thirst:
   > Judge is lacking prior iteration's outcome and summary
 
 - Found out that Planner and Judge's tools are bound by Player's tool => FIXED by implementing separate Registry for each Task
-- Found out that Judge were not carrying previous's judments into memory
+- Found out that Judge were not carrying previous's judments into memory => FIXED
 
-### 3. Navigator/Path planner
+Tasked with finding and examine the corridor in The Begining of The Passage (player has walked this room)
+- Planner did not use world tools (room_knowledge and route_to), instead gave a very generic plan that wasn't helpful
+- Player explored randomly again, somehow found a teleporter, didn't know how to use the device, then decided to transport to SANCTUS (but failed) with reasons:
+  `I’ll teleport to SANCTUS, since it’s a likely source for a named passage or corridor.`
+- The Judge successfully replan that action: `A new plan should refocus on systematic adjacent-room exploration or clarify the teleporter usage before pursuing SANCTUS.`
+- The Planner made a new reasonable plan but didn't use the world tools to pin the exact location of that room on the map, instead gave another general plan again
+- Found out world tools didn't have access to discoveries yet, route_to would require an exact room name and sometimes request won't classify an exact match
+  > Planner needs rework on system prompt. World tools need access to discoveries/rooms
+
+### 3. Navigator/Path planner. Tools and System prompt re-work
+A specialized sub-agent responsible for path-finding.
+- A specialized sub-task perform read-only route finder answering "is there a know path, what is it"
+- Planner and Player now can delegate tasks to this sub-agent to mimic the 'map reading' technique
+
+**Observations:**
+- World tools are called more efficiently
+- Agents are no longer wandering mindlessly. Judge kept the agent in checked and redirected the Agent to plan as well as replan if needed
+- Planner are providing a somewhat goal-decomposition and more detailed guidance
+
+### 4. Memory
+
 
 ### 
 - Caveman language?

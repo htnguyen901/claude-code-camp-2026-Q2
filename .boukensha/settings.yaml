@@ -17,31 +17,37 @@
 #               delete a character mid-session), and explicitly nothing
 #               outside tbamud__* — no fs__* file/directory tools, even if
 #               the optional `filesystem:` server below is running.
-#   planner  -> reasoning over the goal/plan, see tasks.planner below.
-#               Configured here to reuse `inspector` — same read-only tools
-#               the Judge gets — so it can check room_knowledge/look before
-#               committing to a plan. Omitting `tools:` entirely (as this
-#               block used to) is equally valid and denies everything by
-#               default, per Tasks::Base.tool_policy; nothing in code
-#               special-cases "planner" to force that, so whatever role is
-#               granted here is what it actually gets, same as any task.
-#   judge    -> inspector   read-only fact-checking (Tasks::Judge, Phase 3) —
-#               can look/examine/query room_knowledge, never
-#               move/attack/quit/give.
-#   (navigator is reserved for a possible future Tasks::Navigator — deferred
-#   to v2, not currently assigned to any task.)
+#   planner  -> world_knowledge + consult_navigator, see tasks.planner
+#               below. Fact lookups (world__room_knowledge) plus delegated
+#               path-finding, not live look/examine over the Player's MUD
+#               connection — observing is the Player's job. Omitting
+#               `tools:` entirely (as this block used to) is equally valid
+#               and denies everything by default, per Tasks::Base.tool_policy;
+#               nothing in code special-cases "planner" to force that, so
+#               whatever role is granted here is what it actually gets, same
+#               as any task.
+#   judge    -> world_knowledge + consult_navigator   overall mentor, not a
+#               gameplay coach: keeps the Player honest against the Plan.
+#               Fact-checks via world__room_knowledge directly and delegates
+#               path reasoning to consult_navigator, but never
+#               look/examine/shop/consume/consider/diagnose (that's the
+#               Player's responsibility) and never move/attack/quit/give.
+#   navigator -> navigator  Tasks::Navigator (docs/plans/agent_loop/
+#               navigator.md): world__room_knowledge/route_to only, no
+#               tbamud__move and no tbamud__look — it answers whether a path
+#               exists, it doesn't walk it. Read-only, so it's safe to hand
+#               `consult_navigator` to Judge and Planner as well as Player.
 tool_roles:
   full: ["*"]
   gameplay: ["tbamud__*"]
-  navigator: [tbamud__move, world__room_knowledge, world__route_to]
-  # room_knowledge -> world__room_knowledge, plus world__route_to
-  # (docs/plans/world_knowledge/world_knowledge.md): both now come from
-  # the log-viz MCP server below, same prefix__name convention as
-  # tbamud__* — room_knowledge stopped being a locally-registered
-  # exception once it became an MCP server too.
-  inspector: [tbamud__look, tbamud__shop, tbamud__consume, tbamud__examine, tbamud__info_self,
-             tbamud__info_world, tbamud__consider, tbamud__diagnose,
-             world__room_knowledge, world__route_to]
+  # tbamud__move removed — Navigator never acts, it only answers "is there a
+  # known path, and what is it?" (docs/plans/agent_loop/agents_tools/
+  # tool_scope_rework.md §0).
+  navigator: [world__room_knowledge, world__route_to]
+  # Direct grant for tasks that need room facts but not path-finding (Judge,
+  # Planner). Path-finding for both goes through consult_navigator instead
+  # of a direct world__route_to grant — see tasks.judge/tasks.planner below.
+  world_knowledge: [world__room_knowledge]
 
 tasks:
   # Tasks::Planner — reasons over the goal (and, on a replan, the prior
@@ -49,32 +55,40 @@ tasks:
   # does for judge/player below — Boukensha.run_planner reads it through
   # Tasks::Base.tool_policy and reuses the Player's already-connected Tool
   # objects (see reuse_registered_tools in lib/boukensha.rb), so `role:
-  # inspector` really does let it dispatch look/room_knowledge while
-  # planning. Delete this `tools:` block entirely if you want the Planner
-  # back to pure reasoning with zero tools — that's still the default
-  # when it's omitted, just no longer the only option. See
-  # orchestrator.md §3.
+  # world_knowledge` + `allow: [consult_navigator]` really does let it check
+  # room facts and delegate path-finding while planning, without live
+  # look/examine tools over the Player's own MUD connection. Delete this
+  # `tools:` block entirely if you want the Planner back to pure reasoning
+  # with zero tools — that's still the default when it's omitted, just no
+  # longer the only option. See orchestrator.md §3 and
+  # docs/plans/agent_loop/agents_tools/tool_scope_rework.md §2.
   planner:
     provider: openai
     enabled: true
     model: gpt-5.5
     max_output_tokens: 512
     tools:
-      role: inspector
-  # Tasks::Judge — read-only checkpoint evaluator (docs/plans/agent_loop/
-  # evaluator.md). role: inspector reuses the same glob set above; Registry
-  # silently drops anything it denies, so this is the only place
-  # move/attack/quit/give need to be kept out of the Judge's reach.
-  # max_iterations is deliberately small ("check a couple of facts, then
-  # decide" — Tasks::Judge::DEFAULT_MAX_ITERATIONS falls back to 5 even if
-  # this key is omitted).
+      role: world_knowledge
+      allow: [consult_navigator]
+  # Tasks::Judge — read-only overall mentor, not a gameplay coach
+  # (docs/plans/agent_loop/evaluator.md, tool_scope_rework.md §0/§2).
+  # role: world_knowledge grants world__room_knowledge directly for
+  # fact-checking the transcript; consult_navigator delegates path-specific
+  # reasoning instead of a direct world__route_to grant. Registry silently
+  # drops anything it denies, so this is the only place
+  # look/examine/shop/consume/consider/diagnose/move/attack/quit/give need
+  # to be kept out of the Judge's reach. max_iterations is deliberately
+  # small ("check a couple of facts, then decide" —
+  # Tasks::Judge::DEFAULT_MAX_ITERATIONS falls back to 5 even if this key is
+  # omitted).
   judge:
     provider: openai
     model: gpt-5.5
     max_output_tokens: 400
     max_iterations: 5
     tools:
-      role: inspector
+      role: world_knowledge
+      allow: [consult_navigator]
   player:
     provider: openai
     model: gpt-5.4-mini
@@ -82,7 +96,26 @@ tasks:
       system: true
     tools:
       role: gameplay
+      allow: [consult_navigator]
       deny: [tbamud__create_character, tbamud__delete_character]
+  # Tasks::Navigator — docs/plans/agent_loop/navigator.md, reworked by
+  # tool_scope_rework.md §0/§3/§4 into a read-only route *finder*, not a
+  # route *executor* — it answers "is there a known path, and what is it?"
+  # and returns a short description; it never moves anyone. Callable as a
+  # tool (consult_navigator, registered above via `allow:`) by Player,
+  # Judge, and Planner alike, not a background per-turn call like
+  # planner/judge above — it only runs when a caller actually asks for it.
+  # max_iterations is small — a handful of world__route_to/
+  # world__room_knowledge calls to answer one question, not "issue N moves,
+  # then stop" (Tasks::Navigator::DEFAULT_MAX_ITERATIONS falls back to 4
+  # even if this key is omitted).
+  navigator:
+    provider: openai
+    model: gpt-5.4-mini
+    max_output_tokens: 300
+    max_iterations: 4
+    tools:
+      role: navigator
   # log_viz's background content-classification subtask (ContentFact —
   # docs/plans/observability/room_world_inspector.md §1), read by
   # LogViz::Settings, NOT by the boukensha gem — log_viz is a separate Ruby
