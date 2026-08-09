@@ -14,61 +14,61 @@ without ever moving the character or touching their own context directly.
 
 ```mermaid
 flowchart TD
-    Start(["boukensha --player NAME  (Repl)\nor Session.play  (autonomous)"]) --> Boot
+    Start(["boukensha --player NAME (Repl)<br/>or Session.play (autonomous)"]) --> Boot
 
     subgraph Boot["Startup"]
         direction TB
-        Cfg["Load settings.yaml + .boukensha/.env"] --> MCP["Connect MCP servers:\nmud-manager, log_viz"]
-        MCP --> Mem["PlayerMemory.load NAME\n-> prior_digest (.md)"]
+        Cfg["Load settings.yaml + .boukensha/.env"] --> MCP["Connect MCP servers:<br/>mud-manager, log_viz"]
+        MCP --> Mem["PlayerMemory.load NAME<br/>-> prior_digest (.md)"]
     end
 
     Mem -. "prior_digest" .-> Plan
     Boot --> Plan
 
-    Plan[["Planner\n(Tasks::Planner)"]] -->|"ctx.plan"| Turn
+    Plan[["Planner<br/>(Tasks::Planner)"]] -->|"ctx.plan"| Turn
 
     subgraph TurnLoop["Player turn — ReAct loop (Agent#run)"]
         direction TB
-        Turn[["Player\n(Tasks::Player)"]] --> Decide{"model response"}
-        Decide -->|"tool_use: tbamud__*"| MUD[("mud-manager\nMCP server")]
-        Decide -->|"tool_use: world__room_knowledge\nworld__route_to"| World[("log_viz MCP\nworld_map.sqlite3")]
-        Decide -->|"tool_use: consult_navigator"| Nav[["Navigator\n(Tasks::Navigator, read-only,\nthrowaway context)"]]
+        Turn[["Player<br/>(Tasks::Player)"]] --> Decide{"model response"}
+        Decide -->|"tool_use: tbamud__*"| MUD[("mud-manager<br/>MCP server")]
+        Decide -->|"tool_use: world__room_knowledge<br/>world__route_to"| World[("log_viz MCP<br/>world_map.sqlite3")]
+        Decide -->|"tool_use: consult_navigator"| Nav[["Navigator<br/>(Tasks::Navigator, read-only,<br/>throwaway context)"]]
         MUD -->|"tool_result"| Turn
         World -->|"tool_result"| Turn
         Nav -->|"route text"| Turn
         Decide -->|"plain text reply"| StopReason["agent.stop_reason"]
     end
 
-    StopReason -->|"max_iterations / max_tokens\n(wrap-up call)"| Checkpoint
-    StopReason -->|"completed"| CompletedGate{"memory enabled\nfor this player?"}
-    StopReason -.->|"neither yet, and\nevery_n_turns not reached"| Turn
-    StopReason -->|"turns_since_checkpoint >=\nevery_n_turns"| Checkpoint
+    StopReason -->|"max_iterations / max_tokens<br/>(wrap-up call)"| Checkpoint
+    StopReason -->|"completed"| CompletedGate{"memory enabled<br/>for this player?"}
+    StopReason -.->|"neither yet, and<br/>every_n_turns not reached"| Turn
+    StopReason -->|"turns_since_checkpoint >=<br/>every_n_turns"| Checkpoint
 
-    CompletedGate -->|"no"| End(["Session ends"])
-    CompletedGate -->|"yes — one last checkpoint\nso the ending gets chronicled"| Checkpoint
+    CompletedGate -->|"no"| Finish(["Session ends"])
+    CompletedGate -->|"yes — one last checkpoint<br/>so the ending gets chronicled"| Checkpoint
 
-    Checkpoint[["Judge\n(Tasks::Judge)\ncontinue / replan / flag"]] --> Verdict{"verdict"}
+    Checkpoint[["Judge<br/>(Tasks::Judge)<br/>continue / replan / flag"]] --> Verdict{"verdict"}
 
-    Verdict -->|"continue"| FlushC["flush_memory\n(if something notable happened)"]
+    Verdict -->|"continue"| FlushC["flush_memory<br/>(if something notable happened)"]
     FlushC --> Turn
 
-    Verdict -->|"replan — flush BEFORE\nreplanning, so the new plan\nalready reflects the lesson"| FlushR["flush_memory"]
+    Verdict -->|"replan — flush BEFORE<br/>replanning, so the new plan<br/>already reflects the lesson"| FlushR["flush_memory"]
     FlushR --> Plan
 
     Verdict -->|"flag"| FlushF["flush_memory"]
-    FlushF --> Stop(["Session stops —\nno auto-recovery, human reviews log"])
+    FlushF --> Stop(["Session stops —<br/>no auto-recovery, human reviews log"])
 
-    CompletedGate -.->|"completed path"| FlushD["flush_memory\n(outcome: Completed)"]
-    FlushD --> End
+    CompletedGate -.->|"completed path"| FlushD["flush_memory<br/>(outcome: Completed)"]
+    FlushD --> Finish
 
-    FlushC -. "checkpoints +\ngoal/outcome" .-> Chron
-    FlushR -. "checkpoints +\ngoal/outcome" .-> Chron
-    FlushF -. "checkpoints +\ngoal/outcome" .-> Chron
-    FlushD -. "checkpoints +\ngoal/outcome" .-> Chron
+    FlushC -. "checkpoints +<br/>goal/outcome" .-> Chron
+    FlushR -. "checkpoints +<br/>goal/outcome" .-> Chron
+    FlushF -. "checkpoints +<br/>goal/outcome" .-> Chron
+    FlushD -. "checkpoints +<br/>goal/outcome" .-> Chron
 
-    Chron[["Chronicler\n(Tasks::Chronicler — zero tools,\nnever sees MCP connections)"]] --> Digest[".boukensha/memory/NAME.md\n(rewritten digest)"]
-    Chron --> Raw[".boukensha/memory/NAME.jsonl\n(raw session record, appended)"]
-    Digest -. "read back in\nnext session" .-> Mem
+    Chron[["Chronicler<br/>(Tasks::Chronicler — zero tools,<br/>never sees MCP connections)"]] --> Digest[".boukensha/memory/NAME.md<br/>(rewritten digest)"]
+    Chron --> Raw[".boukensha/memory/NAME.jsonl<br/>(raw session record, appended)"]
+    Digest -. "read back in<br/>next session" .-> Mem
 ```
 
 **Two drivers wire this same loop.** `Session.play` (e.g.

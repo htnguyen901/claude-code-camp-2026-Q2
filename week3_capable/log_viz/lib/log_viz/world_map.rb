@@ -606,7 +606,14 @@ module LogViz
     # route) sums those per session via LogViz::Session, the same "cost math
     # lives in Session" boundary player_journey_map.md already established.
     def player_summary(name)
+      # Newest-first, matching the "/" session list's convention (session_paths
+      # sorts filenames descending) — `sessions` itself comes back in raw DB
+      # insertion order (oldest ingested first), so without this the player's
+      # most recent session ends up buried at the bottom of a long table,
+      # reading as if it were never ingested at all.
       player_sessions = sessions.select { |s| s[:player] == name }
+                                 .sort_by { |s| parse_started_at(s[:started_at]) }
+                                 .reverse
       visited_rooms    = rooms_visited_by(name)
 
       {
@@ -1262,6 +1269,15 @@ module LogViz
         "ON CONFLICT(room_title) DO UPDATE SET source = excluded.source, scanned_at = excluded.scanned_at",
         [room_title, source, Time.now.utc.iso8601]
       )
+    end
+
+    # Sort key for #player_summary's newest-first session ordering. A missing
+    # or unparseable started_at sorts to the very back rather than blowing up
+    # the whole page.
+    def parse_started_at(started_at)
+      started_at ? Time.parse(started_at) : Time.at(0)
+    rescue ArgumentError
+      Time.at(0)
     end
 
     def session_row_to_h(row)
