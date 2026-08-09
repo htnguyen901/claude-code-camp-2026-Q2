@@ -1,0 +1,194 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Seeds MUD player characters from YAML profiles in .boukensha/players/, so
+# the world's cast of characters can be recreated after a docker volume
+# reset instead of re-typing the telnet character-creation dance by hand.
+# See docs/plans/observability/players/players_seeding.md for the design.
+#
+# usage: seed_players [--players-dir DIR] [profile ...]
+#
+# Every run bootstraps .boukensha/players/admin.yaml FIRST, no matter what —
+# CircleMUD makes whichever character is created first on a fresh world the
+# top-level admin ("the Implementor"), so admin must claim that slot before
+# any regular profile can. This admin character is never referenced by
+# settings.yaml's MUD_NAME/MUD_PASSWORD and is not meant to be played.
+#
+# This script is for the engineer to run by hand — boukensha (the agent)
+# should never be granted the ability to run it.
+
+require "mud_manager"
+require "yaml"
+require "fileutils"
+require "optparse"
+
+REPO_ROOT = File.expand_path("../..", __dir__)
+DEFAULT_PLAYERS_DIR = File.join(REPO_ROOT, ".boukensha", "players")
+
+CLASS_LETTERS = {
+  "cleric"     => "C",
+  "thief"      => "T",
+  "warrior"    => "W",
+  "magic-user" => "M",
+  "mage"       => "M"
+}.freeze
+
+Profile = Struct.new(:name, :password, :sex, :char_class, :admin, :path, keyword_init: true)
+
+def load_profile(path)
+  data = YAML.safe_load_file(path, permitted_classes: [], aliases: false)
+  raise "#{path}: missing 'persona' key (profiles must reserve it, even if unused today)" unless data.key?("persona")
+
+  class_name = data.fetch("class").to_s.downcase
+  letter = CLASS_LETTERS.fetch(class_name) do
+    raise "#{path}: unknown class #{class_name.inspect} (expected one of #{CLASS_LETTERS.keys.join(', ')})"
+  end
+
+  Profile.new(
+    name: data.fetch("name"),
+    password: data.fetch("password"),
+    sex: data.fetch("sex"),
+    char_class: letter,
+    admin: !!data["admin"],
+    path: path
+  )
+rescue KeyError => e
+  raise "#{path}: #{e.message}"
+end
+
+def ensure_admin_profile!(players_dir)
+  path = File.join(players_dir, "admin.yaml")
+  return path if File.exist?(path)
+
+  FileUtils.mkdir_p(players_dir)
+  File.write(path, <<~YAML)
+    name: admin
+    password: password
+    sex: M
+    class: warrior
+    admin: true
+
+    persona:
+      playstyle: null
+      risk_mode: null
+      thought_process: null
+      notes: null
+  YAML
+  puts "created default admin profile at #{path} (name/password: admin/password " \
+       "per HOW_TO_PLAY.md's convention — edit before first run for different credentials)"
+  path
+end
+
+def bootstrap_admin(players_dir)
+  path = ensure_admin_profile!(players_dir)
+  profile = load_profile(path)
+  raise "#{path}: admin profile must have admin: true" unless profile.admin
+
+  session = MudManager::Session.new.open
+  begin
+    session.create_character(profile.name, profile.password, sex: profile.sex, char_class: profile.char_class)
+    session.close
+    puts "world was fresh — created admin '#{profile.name}' as the Implementor " \
+         "(first character created). This character is not for gameplay."
+  rescue MudManager::Session::CharacterExistsError
+    session.close
+    confirm_admin_password!(profile)
+  end
+end
+
+def confirm_admin_password!(profile)
+  session = MudManager::Session.new.open
+  session.login(profile.name, profile.password)
+  puts "admin '#{profile.name}' already exists — confirmed stored password is correct. Not touching it."
+rescue MudManager::Session::LoginError => e
+  raise "admin character '#{profile.name}' exists but #{e.message} — fix #{profile.path} " \
+        "or the in-game password before re-running"
+ensure
+  session.close
+end
+
+def prompt_conflict(name)
+  loop do
+    print "Player '#{name}' already exists on the server. [s]kip / [d]elete and reseed / [q]uit? "
+    $stdout.flush
+    case $stdin.gets&.strip&.downcase
+    when "s", "skip" then return :skip
+    when "d", "delete" then return :delete_and_reseed
+    when "q", "quit" then return :quit
+    else puts "please answer s, d, or q"
+    end
+  end
+end
+
+def delete_and_reseed(profile)
+  login_session = MudManager::Session.new.open
+  begin
+    login_session.login(profile.name, profile.password)
+  rescue MudManager::Session::LoginError => e
+    login_session.close
+    raise "cannot delete '#{profile.name}': #{e.message} — the password in #{profile.path} " \
+          "doesn't match the server"
+  end
+  login_session.delete_character(profile.password)
+  login_session.close
+
+  create_session = MudManager::Session.new.open
+  create_session.create_character(profile.name, profile.password, sex: profile.sex, char_class: profile.char_class)
+  create_session.close
+end
+
+def seed_profile(profile)
+  session = MudManager::Session.new.open
+  begin
+    session.create_character(profile.name, profile.password, sex: profile.sex, char_class: profile.char_class)
+    session.close
+    puts "created '#{profile.name}'"
+    return :created
+  rescue MudManager::Session::CharacterExistsError
+    session.close
+  end
+
+  case prompt_conflict(profile.name)
+  when :skip
+    puts "skipped (exists) '#{profile.name}'"
+    :skipped
+  when :delete_and_reseed
+    delete_and_reseed(profile)
+    puts "recreated '#{profile.name}'"
+    :recreated
+  when :quit
+    :quit
+  end
+end
+
+players_dir = DEFAULT_PLAYERS_DIR
+OptionParser.new do |o|
+  o.banner = "usage: seed_players [--players-dir DIR] [profile ...]"
+  o.on("--players-dir DIR", "players YAML directory (default: #{DEFAULT_PLAYERS_DIR})") do |v|
+    players_dir = File.expand_path(v)
+  end
+end.parse!(ARGV)
+
+bootstrap_admin(players_dir)
+
+all_profile_paths = Dir.glob(File.join(players_dir, "*.yaml")).reject { |p| File.basename(p) == "admin.yaml" }
+
+target_paths =
+  if ARGV.empty?
+    all_profile_paths
+  else
+    ARGV.map do |stem|
+      path = File.join(players_dir, "#{stem}.yaml")
+      abort "no such profile file: #{path}" unless File.exist?(path)
+      path
+    end
+  end
+
+target_paths.each do |path|
+  profile = load_profile(path)
+  result = seed_profile(profile)
+  if result == :quit
+    puts "aborted by user"
+    break
+  end
+end

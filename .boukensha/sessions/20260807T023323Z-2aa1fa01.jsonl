@@ -1,0 +1,1 @@
+{"phase":"session_start","max_iterations":25,"max_turn_tokens":60000,"max_output_tokens":1024,"context_window":400000,"model":"gpt-5.4-mini","provider":"openai","task":"player","player":"dina","observability_enabled":true,"planner_enabled":true,"otel_service_name":"boukensha","otel_endpoint":null,"session_id":"20260807T023323Z-2aa1fa01","at":"2026-08-07T09:33:23+07:00"}

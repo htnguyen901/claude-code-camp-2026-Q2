@@ -1,0 +1,46 @@
+<!--
+  In-map live search (world_map_enhancer.md §3) — the World Map page's own
+  always-visible search box, separate from the Rooms page's filter form
+  (different page, by design; see the plan's "Known tradeoffs"). Genuinely
+  client-side, unlike the Rooms/Discoveries tables' reactive search: every
+  visited room is already fully present in the rendered SVG (`map_svg`
+  draws the whole accumulated map, unpaginated), so there's no server round
+  trip needed — matching room `<g class="map-node">` elements (by
+  `data-room`, case-insensitive substring) get a `.map-node-match`
+  highlight; non-matching nodes get `.map-node-dim` instead of being
+  hidden, so edges and the overall map shape stay legible while searching.
+  Clearing the box removes both classes from every node. No-JS fallback:
+  the box simply doesn't render (this whole partial is script-only).
+-->
+<script>
+  (function () {
+    var root = document.querySelector(".map-zoom-root");
+    if (!root) return;
+
+    var svg = root.querySelector(".map-svg");
+    if (!svg) return;
+
+    var box = document.createElement("div");
+    box.className = "map-search-box";
+    box.innerHTML = '<input type="text" class="map-search-input" placeholder="Search rooms on map…" aria-label="Search rooms on map">';
+    root.appendChild(box);
+
+    var input = box.querySelector(".map-search-input");
+    var nodes = Array.prototype.slice.call(svg.querySelectorAll(".map-node[data-room]"));
+
+    input.addEventListener("input", function () {
+      var q = input.value.trim().toLowerCase();
+
+      nodes.forEach(function (node) {
+        if (!q) {
+          node.classList.remove("map-node-match", "map-node-dim");
+          return;
+        }
+
+        var match = (node.getAttribute("data-room") || "").toLowerCase().indexOf(q) !== -1;
+        node.classList.toggle("map-node-match", match);
+        node.classList.toggle("map-node-dim", !match);
+      });
+    });
+  })();
+</script>

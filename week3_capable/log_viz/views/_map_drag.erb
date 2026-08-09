@@ -1,0 +1,96 @@
+<!--
+  Shared drag-to-pan (world_map_enhancer.md §7) — layered on top of the
+  existing native `overflow: auto` scrolling, never a replacement for it.
+  Originally lived only inside map.erb's own script
+  (world_map_visualization.md §2); extracted here, same discovery pattern
+  as `_map_zoom.erb`/`_map_search.erb`, so the session time-lapse map and
+  the player Knowledge map get it too instead of only having zoom + native
+  scroll. Finds every `.map-zoom-root` on the page and wires its scrollable
+  child (`.map-scroll` or `.time-lapse-map`) for click-and-drag panning.
+
+  Also owns drag-vs-click disambiguation for anything else listening for
+  clicks on that same scrollable element (map.erb's click-to-inspect):
+  this partial is rendered before map.erb's own <script> tag, so its click
+  listener registers on the shared element first and, when the click is
+  the tail end of a real drag, calls `stopImmediatePropagation` to keep
+  any later-registered listener on that element from ever seeing it —
+  consumers downstream don't need their own drag-tracking anymore.
+
+  Suppresses the browser's native drag-and-drop on anything a mousedown
+  can land on inside the map (every room box is wrapped in an `<a
+  class="map-node-link">`, see app.rb#map_svg) — without this, starting
+  the gesture on a room node hands the drag off to the browser's built-in
+  link/image DnD (a ghost-image drag of the node) instead of ever
+  reaching our mousemove-based panning, so scrollLeft/scrollTop never
+  move. Easy to miss on the World Map, where there's usually plenty of
+  empty canvas to grab; much more likely on the player Knowledge map
+  (§5), whose smaller, denser room set makes starting a drag squarely on
+  top of a node the common case, not the exception.
+-->
+<script>
+  (function () {
+    var DRAG_THRESHOLD_PX = 4;
+
+    function setupRoot(root) {
+      var scrollEl = root.querySelector(".map-scroll, .time-lapse-map");
+      if (!scrollEl) return;
+
+      // A mousedown that lands on a room node's <a> would otherwise start
+      // the browser's own native drag-and-drop instead of ours — see this
+      // partial's top comment. `dragstart` fires before any of our own
+      // mousedown handling ever gets a chance to matter, so this alone is
+      // enough; it doesn't touch real link clicks (navigation isn't a
+      // drag) or our own custom panning below.
+      scrollEl.addEventListener("dragstart", function (e) {
+        e.preventDefault();
+      });
+
+      var dragState = null; // { startX, startY, startScrollLeft, startScrollTop, moved }
+
+      function onMouseMove(e) {
+        if (!dragState) return;
+        var dx = e.clientX - dragState.startX;
+        var dy = e.clientY - dragState.startY;
+        if (!dragState.moved && (Math.abs(dx) > DRAG_THRESHOLD_PX || Math.abs(dy) > DRAG_THRESHOLD_PX)) {
+          dragState.moved = true;
+          scrollEl.classList.add("dragging");
+        }
+        if (dragState.moved) {
+          scrollEl.scrollLeft = dragState.startScrollLeft - dx;
+          scrollEl.scrollTop = dragState.startScrollTop - dy;
+        }
+      }
+
+      function onMouseUp() {
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        scrollEl.classList.remove("dragging");
+        // dragState (and its `moved` flag) is read by the click swallower
+        // below, which fires right after mouseup — cleared there, not here.
+      }
+
+      scrollEl.addEventListener("mousedown", function (e) {
+        if (e.button !== 0) return; // left-click/primary touch only
+
+        dragState = {
+          startX: e.clientX, startY: e.clientY,
+          startScrollLeft: scrollEl.scrollLeft, startScrollTop: scrollEl.scrollTop,
+          moved: false
+        };
+        document.addEventListener("mousemove", onMouseMove);
+        document.addEventListener("mouseup", onMouseUp);
+      });
+
+      scrollEl.addEventListener("click", function (e) {
+        var wasDrag = dragState && dragState.moved;
+        dragState = null;
+        if (wasDrag) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+      });
+    }
+
+    document.querySelectorAll(".map-zoom-root").forEach(setupRoot);
+  })();
+</script>

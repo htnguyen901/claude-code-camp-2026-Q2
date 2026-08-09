@@ -1,0 +1,95 @@
+<%
+  base_path = @scope_player ? "/players/#{CGI.escape(@scope_player)}/rooms" : "/map/rooms"
+  back_href = @scope_player ? "/players/#{CGI.escape(@scope_player)}" : "/map"
+  back_label = @scope_player ? "#{@scope_player}" : "World Map"
+%>
+<a href="<%= back_href %>" class="back">&larr; <%= text_html(back_label) %></a>
+
+<h1>Rooms<% if @scope_player %> &middot; <%= text_html(@scope_player) %>'s knowledge<% end %></h1>
+<p class="meta">
+  <% if @scope_player %>
+    Rooms <%= text_html(@scope_player) %>'s own sessions have actually visited &mdash;
+    see the full <a href="/map/rooms">World Map Rooms</a> for what everyone has found.
+  <% else %>
+    Every room this world map has ever recorded a visit to. See the <a href="/map">World Map</a> for the node-link view.
+  <% end %>
+</p>
+
+<div class="breakdown">
+  <form class="map-filter-form" id="rooms-filter-form" method="get" action="<%= base_path %>">
+    <input type="text" name="room_q" id="room_q" placeholder="search room title/description&hellip;" value="<%= @room_q %>" autocomplete="off">
+    <button type="submit">Filter</button>
+    <% if @room_q.to_s != "" %>
+      <a href="<%= base_path %>" class="map-filter-clear">Clear</a>
+    <% end %>
+  </form>
+
+  <div id="rooms-results">
+    <% if @rooms.empty? %>
+      <p class="empty">No rooms match &mdash; try clearing the filter.</p>
+    <% else %>
+      <table class="breakdown-table">
+        <thead>
+          <tr>
+            <th>Room</th>
+            <th>Exits</th>
+            <th class="nowrap">Visited</th>
+            <th class="nowrap">First seen</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @rooms.each do |r| %>
+            <tr>
+              <td><%= text_html(r[:title]) %></td>
+              <td><%= r[:exits].join(" ") %></td>
+              <td class="nowrap"><%= r[:visit_count] %>&times;</td>
+              <td class="nowrap"><%= format_time(r[:first_seen][:at]) %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+      <% if @next_rooms_before %>
+        <div class="map-pagination">
+          <a href="<%= base_path %>?<%= build_query(room_q: @room_q, rooms_before: @next_rooms_before) %>">Older rooms &rarr;</a>
+        </div>
+      <% end %>
+    <% end %>
+  </div>
+</div>
+
+<!--
+  Reactive search (world_map_enhancer.md §3), progressive enhancement over
+  the plain GET form above (kept as the no-JS fallback — submitting it
+  still narrows results exactly as today). A debounced `input` listener
+  re-requests this same route with the updated query param and swaps only
+  the #rooms-results fragment out of the response — not a purely
+  client-side filter, since PAGE_SIZE pagination on the server means rows
+  sitting on a later page would otherwise be silently missed.
+-->
+<script>
+  (function () {
+    var form = document.getElementById("rooms-filter-form");
+    var input = document.getElementById("room_q");
+    var results = document.getElementById("rooms-results");
+    if (!form || !input || !results) return;
+
+    var timer = null;
+    input.addEventListener("input", function () {
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        var params = new URLSearchParams();
+        if (input.value.trim() !== "") params.set("room_q", input.value.trim());
+        var url = form.getAttribute("action") + (params.toString() ? "?" + params.toString() : "");
+
+        fetch(url)
+          .then(function (r) { return r.text(); })
+          .then(function (html) {
+            var doc = new DOMParser().parseFromString(html, "text/html");
+            var incoming = doc.getElementById("rooms-results");
+            if (incoming) results.innerHTML = incoming.innerHTML;
+          })
+          .catch(function () { /* transient fetch error — leave results as-is */ });
+      }, 200);
+    });
+  })();
+</script>

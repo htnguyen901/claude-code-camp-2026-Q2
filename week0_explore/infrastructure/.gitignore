@@ -1,3 +1,7 @@
 # CircleMUD data, seeded from lib.dist inside the image on first run.
 # Reproducible — editable on the host via the bind mount, not committed.
 /lib/
+
+# Local player-data snapshots made by bin/backup. Not reproducible from
+# source, but kept out of git since they contain player passwords (hashed).
+/backups/

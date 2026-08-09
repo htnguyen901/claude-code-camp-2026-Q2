@@ -1,0 +1,94 @@
+<!--
+  Shared zoom controls (world_map_enhancer.md §1) — layered on top of the
+  existing native scroll + drag-to-pan, never a replacement for either.
+  Rendered once per page (`<%%= erb :_map_zoom, layout: false %>`) into
+  map.erb, session.erb's time-lapse panel, and the player Knowledge map
+  (player.erb) — each of those pages wraps its scrollable map element
+  (`.map-scroll`/`.time-lapse-map`, whose `overflow: auto` is unchanged
+  from world_map_visualization.md §2) in a plain outer `.map-zoom-root`
+  div, so this one script works unmodified across all three instead of
+  being copied per page. Controls are injected as a *sibling* of the
+  scrollable element, inside `.map-zoom-root`, not inside it — so they
+  stay pinned to a fixed corner instead of scrolling away with the map's
+  content. Purely additive: with JS disabled nothing here ever appears,
+  and the map stays exactly at today's plain 1x scroll/drag-only behavior.
+
+  Mechanism: a CSS `transform: scale(n)` on the `.map-svg` element itself —
+  not a change to its `viewBox`/`width`/`height`, which are exactly what
+  give the scrollable element a real, growable scroll area to begin with.
+  A `transform: scale()` changes the *rendered* box size (and therefore
+  what native scrollbars measure against) without touching that intrinsic
+  content size, so zoom and the existing real-scrolling fix compose
+  instead of fighting.
+-->
+<script>
+  (function () {
+    var MIN_ZOOM = 0.4;
+    var MAX_ZOOM = 2.5;
+    var STEP = 1.2;
+
+    var zoomOf = new WeakMap();
+
+    function clamp(z) {
+      return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
+    }
+
+    function zoomTo(root, svg, newZoom, anchorX, anchorY) {
+      var oldZoom = zoomOf.get(root) || 1;
+      newZoom = clamp(newZoom);
+      if (newZoom === oldZoom) return;
+
+      var rect = root.getBoundingClientRect();
+      var ax = typeof anchorX === "number" ? anchorX - rect.left : rect.width / 2;
+      var ay = typeof anchorY === "number" ? anchorY - rect.top : rect.height / 2;
+
+      // Content-space point currently under the anchor, before rescale.
+      var originX = root.scrollLeft + ax;
+      var originY = root.scrollTop + ay;
+      var ratio = newZoom / oldZoom;
+
+      svg.style.transform = "scale(" + newZoom + ")";
+      svg.style.transformOrigin = "0 0";
+
+      root.scrollLeft = originX * ratio - ax;
+      root.scrollTop = originY * ratio - ay;
+
+      zoomOf.set(root, newZoom);
+    }
+
+    function setupRoot(root) {
+      var svg = root.querySelector(".map-svg");
+      if (!svg) return;
+
+      var controls = document.createElement("div");
+      controls.className = "map-zoom-controls";
+      controls.innerHTML =
+        '<button type="button" class="map-zoom-btn" data-zoom="out" aria-label="Zoom out">&minus;</button>' +
+        '<button type="button" class="map-zoom-btn map-zoom-reset" data-zoom="reset" aria-label="Reset zoom">Reset</button>' +
+        '<button type="button" class="map-zoom-btn" data-zoom="in" aria-label="Zoom in">+</button>';
+      root.appendChild(controls);
+
+      controls.addEventListener("click", function (e) {
+        var btn = e.target.closest(".map-zoom-btn");
+        if (!btn) return;
+
+        var action = btn.getAttribute("data-zoom");
+        var current = zoomOf.get(root) || 1;
+        if (action === "in") zoomTo(root, svg, current * STEP);
+        else if (action === "out") zoomTo(root, svg, current / STEP);
+        else zoomTo(root, svg, 1);
+      });
+
+      root.addEventListener("wheel", function (e) {
+        if (!e.ctrlKey && !e.metaKey) return; // plain wheel stays native scroll
+
+        e.preventDefault();
+        var current = zoomOf.get(root) || 1;
+        var factor = e.deltaY < 0 ? STEP : 1 / STEP;
+        zoomTo(root, svg, current * factor, e.clientX, e.clientY);
+      }, { passive: false });
+    }
+
+    document.querySelectorAll(".map-zoom-root").forEach(setupRoot);
+  })();
+</script>

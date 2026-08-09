@@ -50,7 +50,8 @@ module MudManager
       group_manage: { op: Primitives::GROUP_OPS },
       shop: { op: Primitives::SHOP_OPS },
       bank: { op: Primitives::BANK_OPS },
-      mail: { op: Primitives::MAIL_OPS }
+      mail: { op: Primitives::MAIL_OPS },
+      account_menu: { choice: Primitives::ACCOUNT_MENU_CHOICES }
     }.freeze
 
     INTEGER_PARAMS = {
@@ -69,7 +70,22 @@ module MudManager
       look: "Look at your surroundings — call with no arguments (or omit target/preposition) " \
             "for a plain room look. To look at/in/on something specific, set `target` and " \
             "(optionally) `preposition`. `preposition` only makes sense together with " \
-            "`target`; a bare `look at` with nothing to look at is not a valid MUD command."
+            "`target`; a bare `look at` with nothing to look at is not a valid MUD command.",
+      page: "Answer a MUD pager prompt — you'll see one whenever a response ends with " \
+            "something like '[ Return to continue, (q)uit, (r)efresh, (b)ack, or page number " \
+            "(1/2) ]'. Until you answer it, EVERY other command is ignored and you will appear " \
+            "stuck. Call this with no `input` (or blank) to hit Return and see the next page; " \
+            "pass \"q\" to stop paging and get back to the normal game prompt; \"r\" to " \
+            "redisplay the current page; \"b\" to go back a page; or a page number (e.g. \"2\") " \
+            "to jump straight to it. Only call this while a pager prompt is actually showing.",
+      account_menu: "Answer the tbaMUD account/character menu — you'll see it whenever a " \
+                     "response shows '0) Exit ... 1) Enter the game ... Make your choice:'. " \
+                     "This can appear mid-session, not just at login (e.g. right after your " \
+                     "character dies). Until you answer it with a valid number, EVERY other " \
+                     "command (including `enter`, `look`, etc.) is rejected with \"That's not " \
+                     "a menu choice!\" and you will appear stuck. Pass `choice` \"1\" to get " \
+                     "back into the game — that is almost always what you want here. Only call " \
+                     "this while the menu is actually showing."
     }.freeze
 
     # Per-tool argument cleanup that can't be expressed as a JSON Schema

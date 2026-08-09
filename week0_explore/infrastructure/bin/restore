@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+cd "$(dirname "$0")/.."
+
+archive="${1:-}"
+if [ -z "$archive" ]; then
+  archive="$(ls -t backups/lib-backup-*.tar.gz 2>/dev/null | head -n1 || true)"
+fi
+if [ -z "$archive" ] || [ ! -f "$archive" ]; then
+  echo "Usage: $0 [path/to/lib-backup-<timestamp>.tar.gz]" >&2
+  echo "No backup archive found in backups/." >&2
+  exit 1
+fi
+
+service="circlemud"
+was_running=0
+
+container_id="$(docker compose ps -q "$service" 2>/dev/null || true)"
+if [ -n "$container_id" ]; then
+  running="$(docker inspect -f '{{.State.Running}}' "$container_id" 2>/dev/null || true)"
+  if [ "$running" = "true" ]; then
+    was_running=1
+  fi
+fi
+
+if [ "$was_running" -eq 1 ]; then
+  echo "Stopping $service..."
+  docker compose stop "$service"
+fi
+
+echo "Restoring player data from $archive..."
+tar xzf "$archive" -C lib
+
+if [ "$was_running" -eq 1 ]; then
+  echo "Starting $service..."
+  docker compose start "$service"
+fi
+
+echo "Restore complete."

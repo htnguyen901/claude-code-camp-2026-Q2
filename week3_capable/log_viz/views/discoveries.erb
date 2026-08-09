@@ -1,0 +1,141 @@
+<%
+  base_path = @scope_player ? "/players/#{CGI.escape(@scope_player)}/discoveries" : "/map/discoveries"
+  back_href = @scope_player ? "/players/#{CGI.escape(@scope_player)}" : "/map"
+  back_label = @scope_player ? "#{@scope_player}" : "World Map"
+%>
+<a href="<%= back_href %>" class="back">&larr; <%= text_html(back_label) %></a>
+
+<h1>Discoveries<% if @scope_player %> &middot; <%= text_html(@scope_player) %>'s knowledge<% end %></h1>
+<p class="meta">
+  <% if @scope_player %>
+    Items/mobs/NPCs noticed in rooms <%= text_html(@scope_player) %>'s own sessions have visited &mdash;
+    see the full <a href="/map/discoveries">World Map Discoveries</a> for everyone's finds.
+  <% else %>
+    Items/mobs/NPCs noticed in room text, across the whole accumulated map.
+  <% end %>
+</p>
+
+<div class="breakdown">
+  <form class="map-filter-form" id="discoveries-filter-form" method="get" action="<%= base_path %>">
+    <input type="text" name="q" id="discoveries-q" placeholder="search subject or text&hellip;" value="<%= @q %>" autocomplete="off">
+    <select name="kind" id="discoveries-kind">
+      <option value="">any kind</option>
+      <% @kinds.each do |k| %>
+        <option value="<%= k %>" <%= "selected" if @kind == k %>><%= k %></option>
+      <% end %>
+    </select>
+    <select name="room" id="discoveries-room">
+      <option value="">any room</option>
+      <% @room_titles.each do |title| %>
+        <option value="<%= title %>" <%= "selected" if @room == title %>><%= title %></option>
+      <% end %>
+    </select>
+    <select name="examined" id="discoveries-examined">
+      <option value="">examined or not</option>
+      <option value="1" <%= "selected" if @examined == true %>>examined only</option>
+      <option value="0" <%= "selected" if @examined == false %>>unexamined only</option>
+    </select>
+    <button type="submit">Filter</button>
+    <% if @q.to_s != "" || @kind.to_s != "" || @room.to_s != "" || !@examined.nil? %>
+      <a href="<%= base_path %>" class="map-filter-clear">Clear</a>
+    <% end %>
+  </form>
+
+  <div id="discoveries-results">
+    <% if @discoveries.empty? %>
+      <p class="empty">Nothing matches &mdash; try clearing the filter.</p>
+    <% else %>
+      <table class="breakdown-table">
+        <thead>
+          <tr>
+            <th>Subject</th>
+            <th>Kind</th>
+            <th>Examined</th>
+            <th>Findings</th>
+            <th>Noticed (raw text)</th>
+            <th>Room(s)</th>
+            <th class="nowrap">First seen</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% @discoveries.each do |d| %>
+            <tr>
+              <td><%= text_html(d[:subject] || d[:content]) %></td>
+              <td><span class="kind-badge kind-<%= d[:kind] %>"><%= d[:kind] %></span></td>
+              <td>
+                <% if d[:examined] %>
+                  <span class="examined-badge examined-yes">&check; examined</span>
+                <% else %>
+                  <span class="examined-badge examined-no">not yet</span>
+                <% end %>
+              </td>
+              <td class="discovery-findings">
+                <% if d[:examination_result].to_s.strip != "" %>
+                  <%= text_html(truncate(d[:examination_result], 140)) %>
+                <% else %>
+                  <span class="muted">&mdash;</span>
+                <% end %>
+              </td>
+              <td><%= text_html(d[:content]) %></td>
+              <td><%= d[:rooms].join(", ") %></td>
+              <td class="nowrap"><%= format_time(d[:first_seen_at]) %></td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+      <% if @next_before %>
+        <div class="map-pagination">
+          <a href="<%= base_path %>?<%= build_query(q: @q, kind: @kind, room: @room, examined: params[:examined], before: @next_before) %>">Older discoveries &rarr;</a>
+        </div>
+      <% end %>
+    <% end %>
+  </div>
+</div>
+
+<!--
+  Reactive search (world_map_enhancer.md §3) — same "patch, don't reload"
+  shape as rooms.erb: a debounced listener on the text field, an immediate
+  one on each select, both re-requesting this route and swapping only
+  #discoveries-results out of the response. No-JS fallback is the plain GET
+  form above, unchanged.
+-->
+<script>
+  (function () {
+    var form = document.getElementById("discoveries-filter-form");
+    var results = document.getElementById("discoveries-results");
+    if (!form || !results) return;
+
+    var textInput = document.getElementById("discoveries-q");
+    var selects = [
+      document.getElementById("discoveries-kind"),
+      document.getElementById("discoveries-room"),
+      document.getElementById("discoveries-examined")
+    ];
+
+    function refresh() {
+      var params = new URLSearchParams(new FormData(form));
+      var qs = params.toString();
+      var url = form.getAttribute("action") + (qs ? "?" + qs : "");
+
+      fetch(url)
+        .then(function (r) { return r.text(); })
+        .then(function (html) {
+          var doc = new DOMParser().parseFromString(html, "text/html");
+          var incoming = doc.getElementById("discoveries-results");
+          if (incoming) results.innerHTML = incoming.innerHTML;
+        })
+        .catch(function () { /* transient fetch error — leave results as-is */ });
+    }
+
+    var timer = null;
+    if (textInput) {
+      textInput.addEventListener("input", function () {
+        clearTimeout(timer);
+        timer = setTimeout(refresh, 200);
+      });
+    }
+    selects.forEach(function (sel) {
+      if (sel) sel.addEventListener("change", refresh);
+    });
+  })();
+</script>

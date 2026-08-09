@@ -45,14 +45,25 @@ module MudManager
     private
 
     def open_default_session_from_env
-      name = ENV["MUD_NAME"]
-      pass = ENV["MUD_PASSWORD"]
+      name, pass, opts = env_credentials
       return unless name && pass
 
-      opts = {}
-      opts[:host] = ENV["MUD_HOST"] if ENV["MUD_HOST"]
-      opts[:port] = ENV["MUD_PORT"].to_i if ENV["MUD_PORT"] && !ENV["MUD_PORT"].empty?
       connect_session(DEFAULT_SESSION, name: name, password: pass, **opts)
+    end
+
+    # {name, password, opts} this process was started with, or nils if none
+    # were set — the only credentials `reconnect` ever uses. Kept separate
+    # from `connect`'s args-supplied name/password so a reconnect can never
+    # end up authenticating as anything other than the identity this daemon
+    # was launched with.
+    def env_credentials
+      name = ENV["MUD_NAME"]
+      pass = ENV["MUD_PASSWORD"]
+      opts = {}
+      opts[:host]    = ENV["MUD_HOST"] if ENV["MUD_HOST"]
+      opts[:port]    = ENV["MUD_PORT"].to_i if ENV["MUD_PORT"] && !ENV["MUD_PORT"].empty?
+      opts[:timeout] = Float(ENV["MUD_TIMEOUT"]) if ENV["MUD_TIMEOUT"] && !ENV["MUD_TIMEOUT"].empty?
+      [name, pass, opts]
     end
 
     def connect_session(session_id, name:, password:, **opts)
@@ -127,6 +138,24 @@ module MudManager
           }
         },
         {
+          "name" => "reconnect",
+          "description" => "Re-establish this process's own MUD login — the identity it was " \
+                            "started with (MUD_NAME/MUD_PASSWORD) — after a genuine connection " \
+                            "drop. Takes no name or password, so it can only ever come back as " \
+                            "the same character; it cannot log in as anyone else. Closes the " \
+                            "given session first if it's still open. If what you're actually " \
+                            "looking at is the account menu (\"Make your choice:\") rather than " \
+                            "a dead connection, use `account_menu` instead — that answers it in " \
+                            "place without dropping the connection at all.",
+          "inputSchema" => {
+            "type" => "object",
+            "properties" => {
+              "session_id" => { "type" => "string", "description" => "session to reconnect (default: \"default\")" }
+            },
+            "required" => []
+          }
+        },
+        {
           "name" => "disconnect",
           "description" => "Close a previously-opened session.",
           "inputSchema" => {
@@ -178,6 +207,7 @@ module MudManager
       text, error =
         case name
         when "connect"          then handle_connect(args)
+        when "reconnect"        then handle_reconnect(args)
         when "disconnect"       then handle_disconnect(args)
         when "create_character" then handle_create_character(args)
         when "delete_character" then handle_delete_character(args)
@@ -193,6 +223,22 @@ module MudManager
       opts[:port] = Integer(args["port"]) if args["port"]
       connect_session(session_id, name: args["name"].to_s, password: args["password"].to_s, **opts)
       ["connected session '#{session_id}'", false]
+    rescue Session::Error, Error, ArgumentError => e
+      [format_error(e), true]
+    end
+
+    def handle_reconnect(args)
+      session_id = (args["session_id"] || DEFAULT_SESSION).to_s
+      name, pass, opts = env_credentials
+      return ["no MUD_NAME/MUD_PASSWORD in this process's environment — nothing to reconnect as", true] unless name && pass
+
+      old = @sessions_mu.synchronize { @sessions.delete(session_id) }
+      old&.close
+
+      session = Session.new(**opts).open
+      session.login(name, pass)
+      @sessions_mu.synchronize { @sessions[session_id] = session }
+      ["reconnected session '#{session_id}'", false]
     rescue Session::Error, Error, ArgumentError => e
       [format_error(e), true]
     end

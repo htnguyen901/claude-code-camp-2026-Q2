@@ -1,0 +1,68 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Spawns one `boukensha --player NAME` process per given name, all running
+# the same goal as their one turn — see docs/plans/observability/players/
+# multiple_concurrent_players.md §1 and its "Open questions" #3. Each
+# process runs --no-tui (N TUIs interleaved on one terminal isn't readable)
+# with the goal piped in as its only line of stdin, so the REPL processes it
+# as one turn and then exits on the next EOF — the same "one-shot" behavior
+# `boukensha --no-tui < goal.txt` always has, just run N times concurrently
+# as N different characters. Every process's stdout/stderr goes to its own
+# log file instead of the shared terminal.
+#
+# usage: play_players --goal "explore the temple square" noir dina
+#
+# Not doing (see the plan): distinct goals per player — every name given
+# gets the identical goal text. This is a thin convenience wrapper, not a
+# process supervisor: no restart-on-crash, no output multiplexing back to
+# one terminal. It just spawns, waits, and reports where each log landed.
+
+require "optparse"
+require "fileutils"
+require "tmpdir"
+require "time"
+
+REPO_ROOT = File.expand_path("..", __dir__)
+DEFAULT_BOUKENSHA_DIR = File.join(REPO_ROOT, ".boukensha")
+
+goal = nil
+OptionParser.new do |o|
+  o.banner = "usage: play_players --goal \"<goal text>\" NAME [NAME ...]"
+  o.on("--goal GOAL", "the one-shot goal every listed player is given") { |v| goal = v }
+end.parse!(ARGV)
+
+names = ARGV
+abort "usage: play_players --goal \"<goal text>\" NAME [NAME ...]" if goal.to_s.strip.empty? || names.empty?
+
+boukensha_dir = ENV["BOUKENSHA_DIR"] || DEFAULT_BOUKENSHA_DIR
+players_dir   = File.join(boukensha_dir, "players")
+names.each do |name|
+  abort "no such player profile: #{File.join(players_dir, "#{name}.yaml")}" unless File.exist?(File.join(players_dir, "#{name}.yaml"))
+end
+
+log_dir = File.join(boukensha_dir, "play_logs")
+FileUtils.mkdir_p(log_dir)
+
+# One shared input file, not a pipe — a pipe's bytes are consumed by
+# whichever process reads them first, but every spawned process here needs
+# its own independent read of the same goal text.
+goal_file = File.join(Dir.mktmpdir("play_players"), "goal.txt")
+File.write(goal_file, "#{goal}\n")
+
+stamp = Time.now.strftime("%Y%m%dT%H%M%SZ")
+runs = names.map do |name|
+  log_path = File.join(log_dir, "#{name}-#{stamp}.log")
+  pid = Process.spawn(
+    "boukensha", "--player", name, "--no-tui",
+    in: goal_file, out: [log_path, "w"], err: [:child, :out]
+  )
+  puts "[play_players] #{name} (pid #{pid}) -> #{log_path}"
+  { name: name, pid: pid, log_path: log_path }
+end
+
+status = runs.map { |r| [r, Process.wait2(r[:pid])[1]] }
+status.each do |run, exit_status|
+  outcome = exit_status.success? ? "done" : "exited #{exit_status.exitstatus}"
+  puts "[play_players] #{run[:name]} #{outcome} — see #{run[:log_path]}"
+end

@@ -1,55 +1,114 @@
+session:
+  self_manage: true      # keep going after a Judge checkpoint instead of waiting for you to type "continue"
+  max_cost_usd: 5.00      # hard spend cap across the whole session (Player + Planner + Judge + Navigator combined)
+  cost_warn_pct: 0.85     # optional, defaults to 0.85 — fraction of max_cost_usd that triggers one wind-down turn before stopping
+
+# Per-player, cross-session memory (docs/plans/memory/player_memory.md) —
+# Session.play only, gated by both memory.enabled and a --player being set.
+# Defaults off: an LLM-authored digest that's wrong can steer a future
+# session's plan in the wrong direction, so this stays opt-in until a few
+# real sessions' digests have been read and look sane.
+memory:
+  enabled: true
+  # dir: memory   # relative to .boukensha/, default shown
+
 # Named, reusable tool-name glob sets — see docs/plans/tools_policy/
 # permission.md. A task with no tasks.<name>.tools block at all gets zero
-# tools (deny-by-default, Boukensha::Tasks::Base.tool_policy); `role: full`
-# below is what restores today's "sees every tool any configured mcp_servers
-# entry advertises" behavior for the one task that still needs it.
+# tools (deny-by-default, Boukensha::Tasks::Base.tool_policy).
+#
+# `full: ["*"]` is kept only as a manual debugging escape hatch (temporarily
+# point a task's `tools:` at it to see every tool any configured mcp_servers
+# entry advertises) — no task is assigned it by default any more. It grants
+# account-management tools (tbamud__create_character/delete_character) and,
+# whenever the optional `filesystem:` server is up, every fs__* file/
+# directory tool too — none of which any current task should have.
+#
+# Roles for the Planner/Player/Judge agentic loop (docs/plans/agent_loop/
+# orchestrator.md, worker.md, evaluator.md):
+#   player   -> gameplay    every tbamud__* MUD command except the two
+#               account-management ones (create_character/delete_character —
+#               a playing character has no legitimate reason to create or
+#               delete a character mid-session), and explicitly nothing
+#               outside tbamud__* — no fs__* file/directory tools, even if
+#               the optional `filesystem:` server below is running.
+#   planner  -> world_knowledge + consult_navigator, see tasks.planner
+#               below. Fact lookups (world__room_knowledge) plus delegated
+#               path-finding, not live look/examine over the Player's MUD
+#               connection — observing is the Player's job. Omitting
+#               `tools:` entirely (as this block used to) is equally valid
+#               and denies everything by default, per Tasks::Base.tool_policy;
+#               nothing in code special-cases "planner" to force that, so
+#               whatever role is granted here is what it actually gets, same
+#               as any task.
+#   judge    -> world_knowledge + consult_navigator   overall mentor, not a
+#               gameplay coach: keeps the Player honest against the Plan.
+#               Fact-checks via world__room_knowledge directly and delegates
+#               path reasoning to consult_navigator, but never
+#               look/examine/shop/consume/consider/diagnose (that's the
+#               Player's responsibility) and never move/attack/quit/give.
+#   navigator -> navigator  Tasks::Navigator (docs/plans/agent_loop/
+#               navigator.md): world__room_knowledge/route_to only, no
+#               tbamud__move and no tbamud__look — it answers whether a path
+#               exists, it doesn't walk it. Read-only, so it's safe to hand
+#               `consult_navigator` to Judge and Planner as well as Player.
 tool_roles:
   full: ["*"]
-  navigator: ["tbamud__move"]
-  inspector: [tbamud__look, tbamud__shop, tbamud__consume, tbamud__examine, tbamud__info_self,
-             tbamud__info_world, tbamud__consider, tbamud__diagnose,
-             room_knowledge]
+  gameplay: ["tbamud__*"]
+  navigator: [world__room_knowledge, world__route_to]
+  world_knowledge: [world__room_knowledge]
 
 tasks:
-  # player:
-  #   provider: anthropic
-  #   model: claude-haiku-4-5
-  #   prompt_override:
-  #     system: true
+  planner:
+    provider: openai
+    enabled: true
+    model: gpt-5.5
+    max_output_tokens: 512
+    tools:
+      role: world_knowledge
+      allow: [consult_navigator]
+  judge:
+    provider: openai
+    model: gpt-5.5
+    max_output_tokens: 400
+    max_iterations: 5
+    tools:
+      role: world_knowledge
+      allow: [consult_navigator]
   player:
     provider: openai
     model: gpt-5.4-mini
     prompt_override:
       system: true
-    # tools:
-      # role: full
     tools:
-      role: inspector
-      allow: [tbamud__move]  
-  # log_viz's background content-classification subtask (ContentFact —
-  # docs/plans/observability/room_world_inspector.md §1), read by
-  # LogViz::Settings, NOT by the boukensha gem — log_viz is a separate Ruby
-  # program that just happens to read this same file. Same "task" shape as
-  # `player` above (provider/model), so it's configured the same way.
-  #
-  # Only `provider: ollama` is actually implemented today — a different
-  # value here is accepted (won't raise) but falls back to ollama with a
-  # warning, since this is a best-effort background feature, not something
-  # that should block log_viz from starting. `host` is optional; the
-  # `OLLAMA_HOST` env var still overrides it if set (useful when log_viz
-  # and Ollama don't share a network namespace, e.g. cross-VM/WSL setups).
+      role: gameplay
+      allow: [consult_navigator]
+      # create_character/delete_character: account management, not something
+      # a playing character has a reason to do mid-session.
+      # connect/disconnect: take an arbitrary name+password from the LLM —
+      # the one thing standing between a stuck session and the agent
+      # inventing credentials and logging in as a fabricated character (see
+      # docs/journal/3_capable.md's "logged in as boukensha" incident).
+      # tbamud__reconnect (env-credential-only, no name/password params) and
+      # tbamud__account_menu (answers the in-game "Make your choice:" menu
+      # without dropping the connection) cover the same recovery need
+      # safely and stay allowed via the `gameplay` role's tbamud__* wildcard.
+      deny: [tbamud__create_character, tbamud__delete_character, tbamud__connect, tbamud__disconnect]
+  navigator:
+    provider: openai
+    model: gpt-5.4-mini
+    max_output_tokens: 300
+    max_iterations: 4
+    tools:
+      role: navigator
+  chronicler:
+    provider: openai
+    model: gpt-5.5      # cheap/fast — one reflective rewrite, not open-ended play
+    max_output_tokens: 2000
   content_fact:
+    enabled: true
     provider: ollama
     model: gemma4
     # host: http://localhost:11434
-
-  # boukensha's own MUD tool-result compactor (see
-  # docs/plans/token_optimization/mud_response_compaction.md). Tiers 0/1 —
-  # ANSI/prompt-noise stripping and structure-aware trim, keeping room
-  # title/exits/contents verbatim — always run, no config needed. `enabled`
-  # here gates only Tier 2, the opt-in LLM prose rewrite; left off until
-  # its eval (task completion / next-action correctness) confirms it's safe
-  # to default on.
   compactor:
     enabled: true
     provider: ollama
@@ -67,37 +126,8 @@ tasks:
 # observability:
 #   enabled: false
 
-# mud:
-#   host: localhost
-#   port: 4000
-#   username: dummy
-#   password: helloworld
 
 mcp_servers:
-  # The MUD. `mud` is not special to boukensha any more — it's just the server
-  # that happens to know telnet and the login dance. Credentials travel by
-  # environment because that is what the stdio transport gives you; the LLM
-  # never sees them, and the session lives in the daemon.
-  #
-  # `command`/`args` are resolved by the OS against the shell's cwd — NOT
-  # against boukensha_dir/boukensha_path from ~/.boukensharc, and boukensha
-  # never chdirs for you. A relative path here only works when you happen to
-  # launch from the repo root. Nothing hunts for the binary on your behalf any
-  # more — that discovery logic died with Tools::McpMud, which is the trade
-  # for the agent not knowing what a MUD is. `mud-manager` is installed on
-  # PATH (the mud_manager gem), so we call it directly instead.
-  # This entry is `required` (the default), so a bad path fails loudly at boot.
-  #
-  # MUD_NAME/MUD_PASSWORD are intentionally blank — a static default
-  # character here is exactly what made running two players at once
-  # impossible (docs/plans/observability/players/
-  # multiple_concurrent_players.md). Run `boukensha --player NAME` to log in
-  # as one of .boukensha/players/*.yaml; Boukensha.overlay_player_credentials
-  # fills these two keys in at boot from that profile. The keys stay present
-  # (empty) rather than being deleted outright because the overlay only ever
-  # mutates a key that's already declared here — never invents a new one.
-  # Omitting --player now prints a notice and runs with no MUD identity,
-  # which will fail to log in rather than silently reusing a shared default.
   mud:
     command: mud-manager
     args:    [--mcp]
@@ -114,21 +144,10 @@ mcp_servers:
     prefix:   fs
     required: false
 
-# log_viz / room_knowledge (docs/plans/observability/room_world_inspector.md)
-# — provider/model/host for the content-fact subtask now live in
-# `tasks.content_fact` above. What's left is still environment-only, since
-# it's per-machine path/network config rather than a "task" setting:
-#
-#   LOG_VIZ_WORLD_MAP_DB  default: <repo root>/.boukensha/world_map.sqlite3
-#     SQLite file log_viz's WorldMap reads/writes, and the same file
-#     week2_observability/ruby/13_room_inspector's room_knowledge tool
-#     opens read-only.
-#   LOG_VIZ_SESSIONS_DIR  default: <repo root>/.boukensha/sessions
-#   OLLAMA_HOST           default: http://localhost:11434 (or tasks.content_fact.host above)
-#     Must be reachable from wherever log_viz runs, which may not be the
-#     same host/container the agent's own Ollama backend (backends/
-#     ollama.rb) hits — e.g. Ollama running natively in WSL (this repo's
-#     dev setup) needs no override; Ollama on the Windows host instead of
-#     inside WSL would need this pointed at the Windows-side address.
-#     Unreachable is a soft failure (kind: "unknown"), never blocks
-#     ingestion.
+  # mcp for world tools
+  log-viz:
+    command: log_viz
+    args:    [--mcp]
+    prefix:  world          # room_knowledge reaches the agent as world__room_knowledge
+    env:
+      WORLD_MAP_PLAYER:
