@@ -131,8 +131,19 @@ A chronicler to summrize and learn after gaming session, log as a markdown file 
 ### Error awareness
 
 ## Technical Conclusions
-[todo]
-
-
+- A Planner/Judge loop only helps once it is grounded in the Player's actual state (level, skills, discoveries) and in prior iteration outcomes — a planner or judge running on a generic system prompt behaves like no planner at all
+- World knowledge needs to be a first-class, queryable store (connections, unwalked exits, discoveries) rather than something recomputed per prompt, otherwise agents fall back to random exploration even when a plan exists
+- Path-finding is a distinct capability from planning and deserves its own specialized, read-only subagent (Navigator) — folding "where do I go" into the general planner produced vague, non-actionable plans
+- Session-level constructs (Context#plan, Context#route) are required to survive context compaction; without them, structured guidance (like Navigator's hop-by-hop route) silently disappears from context and agents regress to wandering
+- Memory must be flushed continuously (per turn/checkpoint) and rolled up incrementally, not written once at session end — end-of-session summarization doesn't match how agents actually get stuck and recover mid-session, and it drops learnable mistakes from long, never-escalating sessions
+- Prompt engineering (loosening self-imposed bans, requiring the Chronicler to verify outcomes before recording a strategy) mattered as much as new infrastructure for turning experience into correct, actionable memory
+- Isolating tool registries per subtask (Planner/Judge/Player/Navigator) was necessary to stop subagents from acting outside their intended scope and to keep token cost attributable per role
 
 ## Key Takeaway
+
+- **A plan is only as good as the state it's grounded in.** Planners and judges that don't consult player condition, world knowledge, or prior iteration outcomes converge to generic, unhelpful output — decomposition alone doesn't produce capability.
+- **Specialized, single-purpose subagents beat one generalist agent.** Splitting out a read-only Navigator for path-finding produced more efficient tool use and less mindless wandering than asking the Planner to do everything.
+- **Memory needs to mirror how agents actually get stuck, not how sessions are structured.** Flushing memory only at session end missed mistakes from sessions that never escalated to a flag; moving to per-checkpoint flushing and roll-up (not replacement) fixed agents failing to learn from repeated, unresolved struggles (e.g. hunger).
+- **Context compaction silently deletes structure, not just text.** Without dedicated carriers like Context#plan and Context#route, critical guidance (a Navigator's hop-by-hop instructions) gets compacted away and agents lose progress they'd already made.
+- **Scoped tool registries are a capability lever, not just a cost optimization.** Giving Planner/Judge/Player/Navigator their own tool sets stopped cross-role interference and made token cost attributable, which in turn made it possible to see where the real cost was growing.
+- **The next bottleneck is closing the loop between memory, planning, and error recovery.** Agents can now learn from mistakes and pivot mid-session, but self-imposed behavioral bans (e.g. avoiding combat) can still block them from ever discovering a viable strategy
