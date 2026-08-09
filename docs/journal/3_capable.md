@@ -1,25 +1,21 @@
 ## Week 3 Technical Documentation 
 
 ## Technical Goal
-[todo]
 - Design the Agentic Loop that is capable of executing complex goal
 - Plan decomposition
 - Refine memory and knowledge access
 - (Optional) Implement playstyle/persona and risk mode
 
 ## Technical Uncertainty
-[todo]
 - I am uncertain that having a complex orchestrator and evaluator system will correlate exponentially with capability
 - I am uncertain that world knowledge is enough to aid player with effectively exploring MUD and completing complex tasks
 
 ## Technical Hypothesis
-[todo]
 - Agents will struggle at first when exploration is low
 - Latency on tool call and iteration will significantly increase
 - Agents will need memory and not just world knowledge
 
 ## Technical Observations
-[todo]
 ### 1. Design a high level planner -> Execution -> Judge loop
 - Agents need to plan before executing tasks. But despite having a plan Agent could still drift away from the initial plan or got stuck and need feedback/guidance
 > We also need a judge to evaluate the current progress and to make decision if Agent got stuck
@@ -86,7 +82,7 @@ A specialized sub-agent responsible for path-finding.
 Allow the Agent loop to keep going until cap hit
 - Implement interfering with pause, continue, and stop via tui
 - Enable Agents to keep going
-  - Turn stop will trigger Judge, Judge will provide a verdict and Agent loop keeps going until cap hit
+  - Turn stop will trigger Judge, Judge will provide a verdict and Agent loop keeps going until cap hit or Judge flag the session
 
 
 ### 5. Memory
@@ -121,15 +117,16 @@ A chronicler to summrize and learn after gaming session, log as a markdown file 
 - Made Chronicler to check outcomes before making something a strategy
 
 **Observations**
-- Agents manage to learn and grow with the game:
+- Agents managed to learn and grow with the game:
   - Learn how to kill a monster
   - Learn that it can loot free resource from monster
   - Learn that it made a mistakes repeating failed commands instead of pivoting (was calling examine/consider instead of attacking)
-  - Decide to fight the fido but somehows fighting with Peacekeeper instead and not the inteded target => die
+  - Learn to pick up items on ground when available
+  - Decide to fight the fido while Peacekeeper is in the room => got attacked and died
+  > Agents now can learn from mistakes, can change approach if keeps failing
 
-
-### 
-- Caveman language?
+- Fixed Memory to roll up experience instead of replacing with new
+- Fixed memory not flushed when died 
 
 ### Error awareness
 

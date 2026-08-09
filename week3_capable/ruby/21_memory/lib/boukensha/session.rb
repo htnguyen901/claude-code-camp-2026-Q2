@@ -18,8 +18,12 @@ module Boukensha
     CONTINUE_INSTRUCTION = "continue"
 
     # See docs/plans/agent_loop/evaluator.md §4. agent.stop_reason ==
-    # :completed never reaches this — Session's loop already breaks before
-    # calling it in that case (see .play below).
+    # :completed never reaches this: .play handles that stop_reason as its
+    # own separate trigger (`run_checkpoint = completed_this_turn ? ... :
+    # checkpoint?(...)`, short-circuiting this call entirely), not a case
+    # this predicate needs to branch on — see docs/plans/memory/
+    # player_memory.md's 2026-08-09 "checkpoint the ending turn too"
+    # revision for why a natural completion still needs its own checkpoint.
     def self.checkpoint?(agent, turns_since_checkpoint, every_n_turns:)
       return true if %i[max_iterations max_tokens].include?(agent.stop_reason)
 
@@ -225,9 +229,25 @@ module Boukensha
         )
         text = agent.run
 
-        break if agent.stop_reason == :completed
+        completed_this_turn = agent.stop_reason == :completed
 
-        if checkpoint?(agent, turns_since_checkpoint, every_n_turns: every_n_turns)
+        # A natural completion forces one last Judge checkpoint of its own —
+        # but only when memory is actually recording (`memory`), so a plain
+        # one-shot goal that finishes on turn 1 costs exactly what it always
+        # did. See docs/plans/memory/player_memory.md's 2026-08-09
+        # "checkpoint the ending turn too" revision: without this, a session
+        # ending by natural completion — which includes dying and getting
+        # disconnected from the MUD mid-session, since the Player's next
+        # (and last) reply just narrates a wrap-up instead of calling a tool
+        # — never reached checkpoint? at all (the old `break if completed`
+        # fired first), so if no earlier checkpoint had happened that
+        # session, how/why it ended was never chronicled. checkpoint? itself
+        # is deliberately never called on this path (see its own comment) —
+        # this is a separate, explicit trigger, not a case checkpoint? needs
+        # to know about.
+        run_checkpoint = completed_this_turn ? !!memory : checkpoint?(agent, turns_since_checkpoint, every_n_turns: every_n_turns)
+
+        if run_checkpoint
           turns_since_checkpoint = 0
 
           judged_plan      = ctx.plan
@@ -249,50 +269,62 @@ module Boukensha
           judge_memory.record(entry)
           pending_checkpoints << entry
 
-          case verdict[:verdict]
-          when :replan
-            reason = Boukensha.verdict_reasoning(verdict[:text])
-            reason += "\n\nRepeated actions that triggered this replan: #{repeated_actions.map { |k, v| "#{k}×#{v}" }.join(", ")}" if verdict[:overridden]
-
-            # Update memory before replanning, not after the session ends —
-            # the whole point of a replan is that something notable just
-            # happened, and this replan's own Planner call should already
-            # see it via prior_digest (updated in place by flush_memory).
-            flush_memory.call(reason: :replan, outcome: "Judge requested a replan at turn #{turn}: #{reason}")
-
-            ctx.plan = Boukensha.run_planner(
-              goal: goal, prior_plan: ctx.plan, transcript_tail: Boukensha.transcript_tail(ctx.messages), replan_reason: reason,
-              player_memory: prior_digest, logger: logger, mcp: connections,
-              model: planner_model, backend: planner_backend, api_key: planner_api_key, ollama_host: planner_ollama_host
-            )
-            warn "[boukensha] Session replanned at turn #{turn}:\n#{ctx.plan}\n"
-
-            # Whatever led to this checkpoint has already been captured
-            # elsewhere (the fresh plan above, this replan's memory flush) —
-            # the raw transcript that produced it no longer needs to ride
-            # along in full on every subsequent request. See
-            # docs/plans/memory/context_lifecycle.md §3b. ctx.plan/ctx.route
-            # live outside @messages (Context#effective_system), so this
-            # can't lose either one.
-            ctx.checkpoint_trim!
-          when :flag
-            flag_reasoning = judge_memory.entries.last.reasoning
-            flush_memory.call(reason: :flag, outcome: "Stopped: Judge flagged a risk — #{flag_reasoning}")
-            ctx.checkpoint_trim!
-            warn "[boukensha] Session stopped: Judge flagged a risk at turn #{turn} — #{verdict[:text]}. " \
-                 "v1 has no automatic recovery from a flag; a human should review this session's log."
-            break
+          if completed_this_turn
+            # The Player itself decided this turn — and with it, the
+            # session — is over. There's nothing left to replan or continue
+            # into (the next "continue" turn might be talking to a MUD
+            # connection that's already gone), so this checkpoint exists
+            # purely to get the Judge's read on how the session actually
+            # ended into memory before the loop exits below.
+            flush_memory.call(reason: :completed, outcome: "Completed: #{text}")
           else
-            # :continue -> loop back around to the next Player turn, but
-            # still flush whatever this checkpoint's Judge reasoning has to
-            # offer. This is what makes "learn along the way" real for a
-            # session that never escalates: the flush cadence here is
-            # already throttled by the same checkpoint? gate (every_n_turns
-            # / a limit wrap-up), so this costs exactly one Chronicler call
-            # per checkpoint, same as :replan/:flag above.
-            flush_memory.call(reason: :continue, outcome: "Judge checkpoint at turn #{turn}: continuing — #{Boukensha.verdict_reasoning(verdict[:text])}")
+            case verdict[:verdict]
+            when :replan
+              reason = Boukensha.verdict_reasoning(verdict[:text])
+              reason += "\n\nRepeated actions that triggered this replan: #{repeated_actions.map { |k, v| "#{k}×#{v}" }.join(", ")}" if verdict[:overridden]
+
+              # Update memory before replanning, not after the session ends —
+              # the whole point of a replan is that something notable just
+              # happened, and this replan's own Planner call should already
+              # see it via prior_digest (updated in place by flush_memory).
+              flush_memory.call(reason: :replan, outcome: "Judge requested a replan at turn #{turn}: #{reason}")
+
+              ctx.plan = Boukensha.run_planner(
+                goal: goal, prior_plan: ctx.plan, transcript_tail: Boukensha.transcript_tail(ctx.messages), replan_reason: reason,
+                player_memory: prior_digest, logger: logger, mcp: connections,
+                model: planner_model, backend: planner_backend, api_key: planner_api_key, ollama_host: planner_ollama_host
+              )
+              warn "[boukensha] Session replanned at turn #{turn}:\n#{ctx.plan}\n"
+
+              # Whatever led to this checkpoint has already been captured
+              # elsewhere (the fresh plan above, this replan's memory flush) —
+              # the raw transcript that produced it no longer needs to ride
+              # along in full on every subsequent request. See
+              # docs/plans/memory/context_lifecycle.md §3b. ctx.plan/ctx.route
+              # live outside @messages (Context#effective_system), so this
+              # can't lose either one.
+              ctx.checkpoint_trim!
+            when :flag
+              flag_reasoning = judge_memory.entries.last.reasoning
+              flush_memory.call(reason: :flag, outcome: "Stopped: Judge flagged a risk — #{flag_reasoning}")
+              ctx.checkpoint_trim!
+              warn "[boukensha] Session stopped: Judge flagged a risk at turn #{turn} — #{verdict[:text]}. " \
+                   "v1 has no automatic recovery from a flag; a human should review this session's log."
+              break
+            else
+              # :continue -> loop back around to the next Player turn, but
+              # still flush whatever this checkpoint's Judge reasoning has to
+              # offer. This is what makes "learn along the way" real for a
+              # session that never escalates: the flush cadence here is
+              # already throttled by the same checkpoint? gate (every_n_turns
+              # / a limit wrap-up), so this costs exactly one Chronicler call
+              # per checkpoint, same as :replan/:flag above.
+              flush_memory.call(reason: :continue, outcome: "Judge checkpoint at turn #{turn}: continuing — #{Boukensha.verdict_reasoning(verdict[:text])}")
+            end
           end
         end
+
+        break if completed_this_turn
 
         if turn >= max_turns
           warn "[boukensha] Session stopped: reached max_turns (#{max_turns}) at turn #{turn} " \

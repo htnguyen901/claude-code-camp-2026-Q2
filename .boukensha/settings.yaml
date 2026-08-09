@@ -102,9 +102,8 @@ tasks:
       role: navigator
   chronicler:
     provider: openai
-    model: gpt-5.4-mini      # cheap/fast — one reflective rewrite, not open-ended play
-    max_output_tokens: 600   # a short digest, not a transcript
-    # Deliberately no tools: block — see docs/plans/memory/player_memory.md decision 3.
+    model: gpt-5.5      # cheap/fast — one reflective rewrite, not open-ended play
+    max_output_tokens: 2000
   content_fact:
     enabled: true
     provider: ollama

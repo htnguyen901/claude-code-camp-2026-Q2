@@ -83,10 +83,13 @@ class ChroniclerErrorServer
 end
 
 # Boukensha::Session.play's memory integration — docs/plans/memory/
-# player_memory.md §5. memory.enabled:/player: gate everything; a session
-# only ever writes memory when it hit at least one Judge checkpoint of any
-# kind — including :continue, per the "flush on every checkpoint" revision —
-# a session that completes before ever reaching one writes nothing.
+# player_memory.md §5. memory.enabled:/player: gate everything. Every
+# session now writes at least one memory record when memory is on: either
+# a live checkpoint (:replan/:flag/:continue, per the "flush on every
+# checkpoint" revision) or, if none of those ever fired, the forced
+# checkpoint a natural :completed now also triggers (the "checkpoint the
+# ending turn too" revision) — see
+# test_a_session_that_completes_on_the_first_turn_still_flushes_memory.
 class TestSessionMemory < Minitest::Test
   def with_temp_boukensha_dir(yaml)
     Dir.mktmpdir do |dir|
@@ -176,10 +179,15 @@ class TestSessionMemory < Minitest::Test
       judge_server = SessionMemoryScriptedServer.new([
         ollama_text_response(
           "Player keeps visiting shops it can't afford anything in, but is still making progress overall.\nVERDICT: continue"
-        )
+        ),
+        # Turn 2 completes naturally, which (with memory on) forces a
+        # second, final checkpoint of its own — see
+        # test_a_session_that_completes_on_the_first_turn_still_flushes_memory.
+        ollama_text_response("The Player recovered and finished the goal.\nVERDICT: continue")
       ])
       chronicler_server = SessionMemoryScriptedServer.new([
-        ollama_text_response("Mistakes\n- Broke; stop browsing shops until gold is earned.")
+        ollama_text_response("Mistakes\n- Broke; stop browsing shops until gold is earned."),
+        ollama_text_response("Mistakes\n- Broke; stop browsing shops until gold is earned.\n\nStrategies\n- Recovered and finished the goal anyway.")
       ])
 
       result = Boukensha::Session.play(
@@ -200,12 +208,15 @@ class TestSessionMemory < Minitest::Test
 
       memory  = Boukensha::PlayerMemory.load("noir", memory_dir: File.join(dir, "memory"))
       records = memory.session_records
-      assert_equal 1, records.size, "the :continue checkpoint's live flush is the only write — session end has nothing left to add"
+      assert_equal 2, records.size, "the :continue checkpoint's live flush, plus the forced flush on the completing turn"
       assert_equal "continue", records.first["stop_reason"]
       assert_includes records.first["outcome"], "Judge checkpoint at turn"
       assert_equal 1, records.first["checkpoints"].size
       assert_equal "continue", records.first["checkpoints"].first["verdict"]
-      assert_equal "Mistakes\n- Broke; stop browsing shops until gold is earned.", memory.digest_text
+      assert_equal "completed", records.last["stop_reason"]
+      assert_includes records.last["outcome"], "Completed: Done! Completed."
+      assert_equal "Mistakes\n- Broke; stop browsing shops until gold is earned.\n\nStrategies\n- Recovered and finished the goal anyway.",
+                   memory.digest_text
     end
   end
 
@@ -227,9 +238,16 @@ class TestSessionMemory < Minitest::Test
         ollama_text_response("Done! Completed.")                      # turn 2 (after replanning): completes naturally
       ])
       judge_server = SessionMemoryScriptedServer.new([
-        ollama_text_response("The plan isn't working, try a different approach.\nVERDICT: replan")
+        ollama_text_response("The plan isn't working, try a different approach.\nVERDICT: replan"),
+        # Turn 2 (after replanning) completes naturally, which (with memory
+        # on) forces a second, final checkpoint of its own — see
+        # test_a_session_that_completes_on_the_first_turn_still_flushes_memory.
+        ollama_text_response("The new approach worked.\nVERDICT: continue")
       ])
-      chronicler_server = SessionMemoryScriptedServer.new([ollama_text_response("Discoveries\n- Something learned mid-session.")])
+      chronicler_server = SessionMemoryScriptedServer.new([
+        ollama_text_response("Discoveries\n- Something learned mid-session."),
+        ollama_text_response("Discoveries\n- Something learned mid-session.\n\nStrategies\n- The replanned approach worked.")
+      ])
 
       result = Boukensha::Session.play(
         goal: "explore the temple square",
@@ -249,10 +267,11 @@ class TestSessionMemory < Minitest::Test
 
       memory  = Boukensha::PlayerMemory.load("noir", memory_dir: File.join(dir, "memory"))
       records = memory.session_records
-      assert_equal 1, records.size, "the replan's live flush is the only write — nothing notable is left for session end"
+      assert_equal 2, records.size, "the replan's live flush, plus the forced flush on the completing turn"
       assert_equal "replan", records.first["stop_reason"]
       assert_equal 1, records.first["checkpoints"].size
-      assert_equal "Discoveries\n- Something learned mid-session.", memory.digest_text
+      assert_equal "completed", records.last["stop_reason"]
+      assert_equal "Discoveries\n- Something learned mid-session.\n\nStrategies\n- The replanned approach worked.", memory.digest_text
 
       assert_equal 2, planner_server.captured_bodies.size
       replan_request = JSON.parse(planner_server.captured_bodies[1])
@@ -262,19 +281,64 @@ class TestSessionMemory < Minitest::Test
     end
   end
 
-  # A session that completes on its very first turn never reaches a
-  # checkpoint at all (agent.stop_reason == :completed breaks the loop
-  # before Session.checkpoint? is even consulted), so nothing is written —
-  # no raw record, no digest, no Chronicler call. Distinct from a session
-  # that does reach a checkpoint but gets only a :continue verdict, which
-  # (see test_a_continue_only_checkpoint_still_flushes_memory below) now
-  # does write.
-  def test_a_session_that_completes_with_no_checkpoint_writes_nothing
+  # A session that completes on its very first turn used to reach no
+  # checkpoint at all (agent.stop_reason == :completed broke the loop
+  # before Session.checkpoint? was ever consulted) and wrote nothing —
+  # which meant a session that ended abruptly for an important reason (the
+  # Player died and got disconnected from the MUD, and its last reply just
+  # narrates that instead of calling another tool) was just as silent as
+  # one that ended because the goal was trivially done. See
+  # docs/plans/memory/player_memory.md's "checkpoint the ending turn too"
+  # revision: a natural completion now always gets one forced Judge
+  # checkpoint of its own when memory is on, so how/why the session ended
+  # is never lost purely because nothing escalated beforehand.
+  def test_a_session_that_completes_on_the_first_turn_still_flushes_memory
     with_temp_boukensha_dir(MEMORY_ENABLED_YAML) do |dir|
       planner_server = SessionMemoryScriptedServer.new([ollama_text_response("1. Find the temple entrance.")])
       player_server  = SessionMemoryScriptedServer.new([ollama_text_response("Done! I found the temple.")])
+      judge_server = SessionMemoryScriptedServer.new([
+        ollama_text_response("The Player reached the goal without incident.\nVERDICT: continue")
+      ])
+      chronicler_server = SessionMemoryScriptedServer.new([ollama_text_response("Strategies\n- Exploring directly reached the goal quickly.")])
 
-      Boukensha::Session.play(
+      result = Boukensha::Session.play(
+        goal: "explore the temple square",
+        player: FakePlayer.new("noir"),
+        backend: :ollama, model: "qwen3:8b", ollama_host: player_server.host,
+        planner_backend: :ollama, planner_model: "qwen3:8b", planner_ollama_host: planner_server.host,
+        judge_backend: :ollama, judge_model: "qwen3:8b", judge_ollama_host: judge_server.host,
+        chronicler_backend: :ollama, chronicler_model: "qwen3:8b", chronicler_ollama_host: chronicler_server.host,
+        max_turns: 3
+      )
+      planner_server.stop
+      player_server.stop
+      judge_server.stop
+      chronicler_server.stop
+
+      assert_equal "Done! I found the temple.", result
+      assert_equal 1, judge_server.captured_bodies.size, "the natural completion itself is the forced checkpoint"
+
+      memory  = Boukensha::PlayerMemory.load("noir", memory_dir: File.join(dir, "memory"))
+      records = memory.session_records
+      assert_equal 1, records.size
+      assert_equal "completed", records.first["stop_reason"]
+      assert_includes records.first["outcome"], "Completed: Done! I found the temple."
+      assert_equal 1, records.first["checkpoints"].size
+
+      assert_equal "Strategies\n- Exploring directly reached the goal quickly.", memory.digest_text
+    end
+  end
+
+  # Without memory on (or without a player), the forced completion
+  # checkpoint above must not fire at all — a plain one-shot goal costs
+  # exactly what it always did, and there is no live judge_server here to
+  # answer it if it tried.
+  def test_a_session_that_completes_with_memory_disabled_never_checks_the_judge
+    with_temp_boukensha_dir("") do |dir|
+      planner_server = SessionMemoryScriptedServer.new([ollama_text_response("1. Find the temple entrance.")])
+      player_server  = SessionMemoryScriptedServer.new([ollama_text_response("Done! I found the temple.")])
+
+      result = Boukensha::Session.play(
         goal: "explore the temple square",
         player: FakePlayer.new("noir"),
         backend: :ollama, model: "qwen3:8b", ollama_host: player_server.host,
@@ -284,10 +348,8 @@ class TestSessionMemory < Minitest::Test
       planner_server.stop
       player_server.stop
 
-      memory = Boukensha::PlayerMemory.load("noir", memory_dir: File.join(dir, "memory"))
-      assert_equal [], memory.session_records
-      assert_nil memory.digest_text
-      refute Dir.exist?(File.join(dir, "memory")), "no memory dir should even be created when nothing notable happened"
+      assert_equal "Done! I found the temple.", result
+      refute Dir.exist?(File.join(dir, "memory"))
     end
   end
 
@@ -300,16 +362,26 @@ class TestSessionMemory < Minitest::Test
 
       planner_server = SessionMemoryScriptedServer.new([ollama_text_response("1. Visit the blacksmith.")])
       player_server  = SessionMemoryScriptedServer.new([ollama_text_response("Done! Visited the blacksmith.")])
+      # This session completes naturally on turn 1, which (memory being on)
+      # now forces its own checkpoint — see
+      # test_a_session_that_completes_on_the_first_turn_still_flushes_memory.
+      # Neither response's content matters to this test's own assertions.
+      judge_server      = SessionMemoryScriptedServer.new([ollama_text_response("No issues.\nVERDICT: continue")])
+      chronicler_server = SessionMemoryScriptedServer.new([ollama_text_response("Discoveries\n- The blacksmith haggles if you mention the guild.")])
 
       Boukensha::Session.play(
         goal: "buy a sword",
         player: FakePlayer.new("noir"),
         backend: :ollama, model: "qwen3:8b", ollama_host: player_server.host,
         planner_backend: :ollama, planner_model: "qwen3:8b", planner_ollama_host: planner_server.host,
+        judge_backend: :ollama, judge_model: "qwen3:8b", judge_ollama_host: judge_server.host,
+        chronicler_backend: :ollama, chronicler_model: "qwen3:8b", chronicler_ollama_host: chronicler_server.host,
         max_turns: 3
       )
       planner_server.stop
       player_server.stop
+      judge_server.stop
+      chronicler_server.stop
 
       sent = JSON.parse(planner_server.captured_bodies.first)
       user_text = sent["messages"].find { |m| m["role"] == "user" }["content"]

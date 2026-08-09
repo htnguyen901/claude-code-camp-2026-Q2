@@ -600,11 +600,13 @@ end
   fact for the Chronicler to fold in — flagging in case the resulting digest
   turns out noisier than useful once real sessions are read.
     A: only when there was something notable to learn
-    Superseded by the 2026-08-09 revision below: "notable" turned out to
-    mean "at least one checkpoint happened," not "at least one checkpoint
-    escalated past :continue" — see that revision for why the narrower
-    reading was a bug, not a feature. A session that never reaches a
-    checkpoint at all still writes nothing (unchanged).
+    Superseded by the 2026-08-09 revisions below, twice over: first,
+    "notable" turned out to mean "at least one checkpoint happened," not
+    "at least one checkpoint escalated past :continue" (the "flush on every
+    checkpoint" revision); then, "a session that never reaches a checkpoint
+    at all still writes nothing" turned out to be a bug in its own right,
+    not a stable resting point — see the "checkpoint the ending turn too"
+    revision for why a natural completion needed to force one.
 
 ## Revision (2026-08-08): checkpoint-triggered flush, not session-end
 
@@ -727,3 +729,231 @@ gate, the new `else`/`:continue` branch in `maybe_check_judge`'s verdict
 (`test_a_continue_only_checkpoint_still_flushes_memory`),
 `test/test_repl_memory.rb`
 (`test_a_continue_checkpoint_flushes_memory_without_clear_or_exit`).
+
+## Revision (2026-08-09, cont.): checkpoint the ending turn too
+
+**Problem.** Even after the "flush on every checkpoint" revision above,
+`Session.play`'s loop still had `break if agent.stop_reason == :completed`
+*before* `checkpoint?` was ever consulted. `checkpoint?` itself only fires
+on a limit-triggered wrap-up or the `every_n_turns:` fallback cadence —
+neither of which a turn that ends by the Player simply replying with plain
+text (no further tool call) necessarily hits. So a session that ended by
+natural completion, and had not yet hit any other checkpoint that session,
+flushed nothing at all: not the raw JSONL record, not a digest update,
+nothing — the exact same silent-loss shape the "flush on every checkpoint"
+revision fixed for `:continue`, but for `:completed` instead of a verdict.
+
+This is not a hypothetical. A live self-managed run (`session.self_manage:
+true`) attacked a mob in a room with a Peacekeeper NPC present; the
+Peacekeeper retaliated against the Player instead, killing the character and
+ending the MUD connection. The Player's own final turn, with nothing left to
+call a tool against, just narrated that the session was over — a natural
+`:completed`. Concretely, `.boukensha/memory/dina.jsonl`'s 26 records at the
+time this was noticed were **100% `replan` or `continue`** — zero
+`completed`, zero `flag`, zero `max_turns` — meaning every session that had
+ever ended by running out of turns, completing, or (had one occurred) being
+flagged, had written nothing about how it ended, regardless of what
+happened. One of those 26 records (a live `:replan` checkpoint mid-session,
+not an ending one) does show the Judge catching the Peacekeeper danger in
+the moment — *"they attacked/examined fido without using `consider`, and the
+result shows they are now fighting a Peacekeeper... HP has dropped"* — proof
+the MUD told the agent exactly what happened, in-band, as tool output. The
+signal was never missing; the pipeline just never asked the Judge to look at
+it on the turn where the session actually ended.
+
+**New behavior.** A natural completion (`agent.stop_reason == :completed`)
+now forces one checkpoint of its own, gated on `memory` being present (a
+`player:` given and `memory.enabled?` true) — so a plain one-shot goal with
+no player/memory costs exactly what it always did, and `checkpoint?` itself
+is still never invoked with a `:completed` agent (this is a separate,
+explicit trigger evaluated before falling back to `checkpoint?`, not a case
+`checkpoint?` needs to know about — see its own updated comment). When this
+fires, the Judge is consulted once more against the final transcript tail,
+the resulting entry is recorded, and `flush_memory` is called unconditionally
+with `reason: :completed` — no `:replan`/`:continue` branching afterward,
+since the Player already decided the session is over (the next "continue"
+turn may well be talking to a MUD connection that no longer exists).
+
+**Known tradeoff.** Every session that completes naturally now costs one
+extra Judge (and, via `flush_memory`, one extra Chronicler) call when memory
+is on — including a short, completely uneventful one-shot goal — where
+before this fix it cost nothing if no other checkpoint had fired. This is
+the same "more LLM calls, in exchange for actually capturing what happened"
+tradeoff the "flush on every checkpoint" revision above already accepted for
+`:continue`; extending it to `:completed` closes the one remaining gap where
+a session's own outcome — including a lethal mistake — could still be
+silently unrecorded.
+
+**Files touched:** `week3_capable/ruby/21_memory/lib/boukensha/session.rb`
+(`checkpoint?`'s comment, the new `completed_this_turn`/`run_checkpoint`
+split before the checkpoint block, the `if completed_this_turn ...
+flush_memory.call(reason: :completed, ...)` branch, `break if
+completed_this_turn` replacing the old early `break`),
+`test/test_session_memory.rb` (renamed
+`test_a_session_that_completes_with_no_checkpoint_writes_nothing` to
+`test_a_session_that_completes_on_the_first_turn_still_flushes_memory` and
+inverted its assertions; new
+`test_a_session_that_completes_with_memory_disabled_never_checks_the_judge`;
+`test_a_continue_only_checkpoint_still_flushes_memory`,
+`test_a_replan_flushes_memory_before_the_replanned_planner_call`, and
+`test_a_prior_digest_reaches_the_planners_request_payload` updated to script
+the now-mandatory final checkpoint's Judge/Chronicler responses).
+
+## Revision (2026-08-09, cont.): merge, don't condense — the Chronicler stops discarding lessons
+
+**Problem.** `prompts/chronicler/system.md` told the Chronicler to "revise
+and condense existing notes rather than appending to them... keep the whole
+document short (well under a page)." This is exactly the "Digest quality is
+entirely dependent on the Chronicler actually following 'revise and
+condense'... one that over-condenses can lose a genuinely load-bearing
+lesson" risk this doc's own "Known tradeoffs" section already named — but it
+was observed happening for real, not just in principle. The same
+`dina.jsonl` record discussed in the revision above (a `:replan` checkpoint
+that caught the Player fighting a Peacekeeper) *was* chronicled at the time
+— but by the time `dina.md` was next read, that specific, high-severity,
+named-NPC danger had been generalized away into a vaguer "Use `consider`
+before committing to combat" line with no mention of Peacekeepers at all.
+The lesson wasn't dropped by a bug; the prompt asked for exactly this
+("condense... short... under a page"), and a later session's danger from the
+very same mechanism (attacking near a Peacekeeper) went unwarned-against
+because the specific fact no longer existed anywhere memory could surface
+it. A digest that only ever gets *shorter* cannot durably hold more than
+whatever fits in "under a page," no matter how many sessions taught it
+something new — every new lesson is competing with every old one for the
+same fixed, shrinking budget.
+
+**New behavior.** `prompts/chronicler/system.md` now treats the existing
+digest as durable knowledge by default rather than a draft to be freely
+rewritten: every existing line carries forward into the output unless the
+session at hand gives a specific reason to MERGE it (this session's finding
+is clearly the same fact — combine the two, keeping every specific detail
+either had, not just the more general phrasing) or DROP it (this session's
+outcome directly proves the line false or resolved). Anything else — most
+existing lines, on most sessions — is copied forward unchanged, with new,
+genuinely non-duplicate findings added alongside it. The "keep it short"
+instruction is reframed as a wording concern, not a content one: tighten
+sentences and cut narration/flavor text first, and only fall back to merging
+near-duplicates once wording is already tight — "losing a distinct,
+still-true lesson is a worse outcome than a longer document." The
+Discoveries header explicitly calls out preserving a named NPC's specific
+behavior (the Peacekeeper case, now used as the header's own example)
+instead of laundering it into generic advice that loses the name and the
+reason it matters.
+
+`tasks.chronicler.max_output_tokens` (`.boukensha/settings.yaml`) was raised
+600 → 900 to give a genuinely accumulating digest room to actually keep
+what it's told to keep, instead of being forced back into condensing to fit
+regardless of the prompt's new instructions — still a real ceiling (this
+digest is re-read into every Planner call, so it isn't free), just not one
+tuned for the old "rewrite from scratch every time" behavior.
+
+**Known tradeoff.** A digest that only ever grows (merge/keep, rarely drop)
+will cost more tokens per Planner call over a character's lifetime than one
+that gets condensed on every write, and depends on the Chronicler actually
+recognizing when two write-ups describe the same fact (a MERGE) rather than
+either duplicating them or, worse, still smoothing them together into
+something vaguer than either — this is a prompt-engineering property to
+keep evaluating against real digests, not something this revision can prove
+correct on its own. `max_output_tokens: 900` is a stopgap ceiling, not a
+long-term answer to unbounded growth across dozens of sessions; if a
+character's digest keeps hitting it, that's a signal this prompt needs a
+harder per-line budget or a move to a structured (not free-text) store, not
+just another bump to the token cap.
+
+**Files touched:**
+`week3_capable/ruby/21_memory/prompts/chronicler/system.md` (rewritten:
+MERGE/DROP-with-reason replaces "revise and condense... under a page"),
+`.boukensha/settings.yaml` (`tasks.chronicler.max_output_tokens: 600 → 900`).
+`.boukensha/memory/dina.md` was also regenerated by replaying the full
+`dina.jsonl` history through the corrected prompt from scratch (rather than
+patched by hand), to recover lessons — including the Peacekeeper danger —
+that the old condense-every-time behavior had already discarded from the
+live file; see the regenerated file's own content for what came back.
+
+## Revision (2026-08-09, cont.): the Chronicler is not a second Judge — scope it to plan-independent facts only
+
+**Problem.** The "merge, don't condense" revision above fixed the wrong
+axis. It stopped lessons from being silently dropped, but it never
+questioned *what counted as a lesson in the first place* — and the
+Chronicler's only input besides the digest itself is a Judge checkpoint's
+own reasoning, which is inherently about that session's plan ("deviated
+from the plan," "was against the stop/report guidance," "diverted from the
+survival/gearing priority"). Left unfiltered, that framing bled straight
+into the notes: real `dina.md` output after the previous revision included
+lines like *"Attacking/examining fido without using `consider` after
+failing to buy drink due to no gold was a serious plan mismatch that
+dropped HP and left the plan's safety assumptions invalid"* and *"Repeating
+`1` again during menu recovery was against the stop/report guidance"* — the
+second one, in particular, is purely about one session's specific recovery
+plan and has no meaning at all once that plan is gone. With the 12-line
+cap from the previous revision permissive enough to rarely bind, and every
+checkpoint treated as worth mining for *something*, the digest ballooned to
+~46 lines / ~6.7KB after replaying 27 real sessions — described accurately
+by the user as "too large," "too detailed," and "all over the place," for a
+character barely past its first few play sessions. The Chronicler had
+drifted into re-deriving a Judge-style plan-compliance log instead of
+writing a knowledge base: exactly the boundary decision 1 and decision 3
+(§ "Decisions this plan makes," above) already drew — "tools are just tools
+and world knowledge are just helpers/info, they are not considered
+memory/experience" applies just as much to *a Judge's plan verdicts*, which
+are neither.
+
+**New behavior.** `prompts/chronicler/system.md` now opens with an explicit
+scope statement before any MERGE/DROP mechanics: the Chronicler records
+durable facts about the game that would hold under a *different* plan, not
+commentary on this session's compliance with *this* plan. It's told
+directly to read through a checkpoint's plan-flavored framing and ask "is
+there a fact about the world underneath this, independent of what any plan
+said to do" — with the Peacekeeper line kept as the positive example (survives
+the question) and a plan-compliance line ("repeating `1` violated the
+recovery plan's stop condition") added as the explicit negative example
+(does not). Each header's own definition was narrowed the same way (a
+Mistake is now "an action whose in-game consequence was worse than
+expected," not "an action a checkpoint disliked"; Open Threads is "the goal
+and where it stands," not a recovery-plan play-by-play). The doc now says
+outright that adding nothing is the expected outcome for most sessions,
+since most checkpoints are pure plan-adherence and there's nothing under
+them to keep. The per-header hard cap was tightened 12 → 6 lines, framed as
+rarely worth reaching given how narrow the scope already is, rather than a
+target to fill.
+
+**Regenerating `dina.md` again exposed a second, independent problem**:
+replaying 27 sessions as 27 sequential Chronicler calls (each one's output
+feeding the next as `prior_digest`) is fragile under ordinary LLM
+non-determinism — a fact can be captured correctly at the session it
+happened, then silently fail to survive one of the next 15 MERGE decisions
+purely by chance, with no single call at fault. Two consecutive replays
+this way (same prompt, same input) produced digests that had lost the
+Peacekeeper fact entirely, versus a third that kept it — the same rewritten
+prompt, three different outcomes, because 27 rounds of "is this still
+worth keeping" compounds whatever error rate any one round has. **The fix
+for a one-time historical backfill was to stop simulating incremental play
+and instead make a single Chronicler call over the *entire* concatenated
+history at once** (every session's checkpoints, in order, as one input,
+`prior_digest: nil`) — removing the 27-step compounding chain removes the
+failure mode along with it, since there's now exactly one MERGE/DROP pass
+to get right instead of 26 sequential ones. This is a backfill-only
+technique, not a change to live play: `Session.play` still (correctly)
+calls the Chronicler once per checkpoint, incrementally, since a live
+session doesn't have "the entire future history" available up front the
+way a historical replay does.
+
+**Known tradeoff.** Scoping the Chronicler this tightly means a checkpoint
+that's 90% plan-talk and 10% a genuine discovery relies on the model
+correctly extracting that 10% rather than discarding the whole thing
+because most of it read as plan commentary — the two bad replays above show
+this isn't yet reliable per-call. A single-pass, full-history regeneration
+is a reasonable one-time recovery tool exactly because it's cheap to
+inspect and re-run before committing (as this revision's own repair did),
+but it is not a substitute for improving reliability of the live,
+one-session-at-a-time path, which cannot be re-run and inspected the same
+way before it's already saved.
+
+**Files touched:**
+`week3_capable/ruby/21_memory/prompts/chronicler/system.md` (rewritten
+again: explicit plan-vs-game-fact scope statement with worked positive/
+negative examples, narrowed Mistakes/Strategies/Open-threads definitions,
+12 → 6 line cap, "adding nothing is normal" framing).
+`.boukensha/memory/dina.md` regenerated a second time, this time via a
+single full-history Chronicler call rather than a 27-step replay (see
+above) — the file's own content is the result.

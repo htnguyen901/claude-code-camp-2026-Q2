@@ -453,7 +453,7 @@ module Boukensha
   # planner_input/judge_input already use.
   def self.chronicler_input(goal:, outcome:, checkpoints:, prior_digest: nil)
     parts = []
-    parts << "Your existing notes on this character (revise and condense these — don't just restate them verbatim):\n#{prior_digest}" if prior_digest && !prior_digest.to_s.strip.empty?
+    parts << "Your existing notes on this character (carry these forward by default — only merge in what this session repeats or drop what it disproves):\n#{prior_digest}" if prior_digest && !prior_digest.to_s.strip.empty?
     parts << "This session's goal: #{goal}"
     parts << "This session's outcome: #{outcome}"
     unless checkpoints.empty?
