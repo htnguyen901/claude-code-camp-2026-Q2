@@ -5,6 +5,33 @@
   <%= @summary[:sessions].length %> session<%= "s" unless @summary[:sessions].length == 1 %> logged as this character.
 </p>
 
+<!--
+  Last known location/status (docs/plans/observability/players/
+  player_status.md) — sourced from WorldMap#last_known_room/#last_status,
+  which read the durable sessions/self_state tables directly rather than
+  the live-only LIVE_WINDOW_SECONDS heuristic, so both survive every
+  session for this player going offline.
+-->
+<div class="breakdown">
+  <div class="breakdown-title">Last known status</div>
+  <p class="meta">
+    Location:
+    <% if @summary[:current_room] %>
+      <strong><%= text_html(@summary[:current_room]) %></strong>
+    <% else %>
+      <span class="muted">unknown &mdash; no room recorded yet</span>
+    <% end %>
+  </p>
+  <% if @summary[:last_status] %>
+    <p class="meta">
+      Status (<code><%= text_html(@summary[:last_status][:kind]) %></code>, checked <%= format_time(@summary[:last_status][:at]) %>):
+    </p>
+    <pre class="self-state-text"><%= text_html(@summary[:last_status][:text]) %></pre>
+  <% else %>
+    <p class="meta">Status: <span class="muted">never checked (no <code>score</code> command logged yet)</span></p>
+  <% end %>
+</div>
+
 <div class="breakdown">
   <div class="breakdown-title">Journey vs. the current World Map</div>
   <p class="meta">

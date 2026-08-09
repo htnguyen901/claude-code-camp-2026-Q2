@@ -43,6 +43,11 @@ module MudManager
     SHOP_OPS      = %w[buy sell list value offer].freeze
     BANK_OPS      = %w[balance deposit withdraw].freeze
     MAIL_OPS      = %w[mail receive check].freeze
+    # 4 (change password) and 5 (delete character) are deliberately excluded
+    # — those stay reachable only through their own dedicated tools (and
+    # delete_character is denied to the player role in settings.yaml), never
+    # through this generic menu responder.
+    ACCOUNT_MENU_CHOICES = %w[0 1 2 3].freeze
 
     module_function
 
@@ -347,6 +352,19 @@ module MudManager
     def page(input = "")
       raw = input.to_s.strip
       cmd(:page, "page", raw)
+    end
+
+    # Responds to tbaMUD's account/character menu ("Welcome to tbaMUD! ...
+    # Make your choice:"), which #login's own fresh-`Welcome` branch already
+    # answers once automatically — this is for the SAME menu reappearing
+    # mid-session any time the server drops the character back to it (e.g.
+    # after death). None of the ordinary gameplay verbs reach it: `enter`
+    # sends the literal word "enter" (a movement primitive — "enter <portal>"
+    # — that happens to share a name with menu option 1, not its value), so
+    # it is rejected by the menu exactly like any other non-numeric input.
+    def account_menu(choice)
+      v = check_enum!(choice, ACCOUNT_MENU_CHOICES, :choice)
+      cmd(:account_menu, "account_menu", v)
     end
 
     def quit

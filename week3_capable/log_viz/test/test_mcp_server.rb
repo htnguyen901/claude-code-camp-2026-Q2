@@ -36,6 +36,7 @@ class TestMcpServer < Minitest::Test
       CREATE TABLE examinations (room_title TEXT, subject TEXT, session_id TEXT, turn INTEGER, iteration INTEGER, at TEXT, result_text TEXT, PRIMARY KEY (room_title, subject));
       CREATE TABLE sessions (session_id TEXT PRIMARY KEY, player TEXT);
       CREATE TABLE visits (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, room_title TEXT);
+      CREATE TABLE shop_listings (room_title TEXT PRIMARY KEY, listing_text TEXT, session_id TEXT, at TEXT);
     SQL
 
     db.execute("INSERT INTO rooms(title, exits, first_seen_at) VALUES (?, ?, ?)",
@@ -135,6 +136,9 @@ class TestMcpServer < Minitest::Test
     refute response["result"]["isError"]
 
     payload = result_of(response)
-    assert_equal({ "room_title" => "Anywhere", "examined" => [], "unexamined" => [], "connections" => [] }, payload)
+    assert_equal(
+      { "room_title" => "Anywhere", "examined" => [], "unexamined" => [], "connections" => [], "resources" => [] },
+      payload
+    )
   end
 end

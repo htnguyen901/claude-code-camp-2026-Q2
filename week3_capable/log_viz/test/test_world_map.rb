@@ -780,6 +780,33 @@ class TestWorldMap < Minitest::Test
     assert_equal "Room A", row[:current_room]
   end
 
+  # docs/plans/observability/players/player_status.md: `current_room` used
+  # to come from `live_sessions` only, so it silently disappeared the
+  # moment a session aged out of LIVE_WINDOW_SECONDS. Both the last visited
+  # room and the last `score` result must keep reporting after that.
+  def test_players_current_room_and_status_survive_the_session_going_offline
+    write_lines(File.join(@sessions_dir, "noir-s1.jsonl"), [
+      event(phase: "session_start", player: "noir"),
+      event(phase: "turn", n: 1),
+      event(phase: "iteration", n: 1),
+      *move_lines(direction: "north", title: "Room A", exits: %w[s], at: "2026-01-01T00:00:00Z"),
+      event(phase: "tool_call", name: "tbamud__info_self", args: { "kind" => "score" }, at: "2026-01-01T00:00:05Z"),
+      event(phase: "tool_result", name: "tbamud__info_self",
+            result: "You are Noir the Great Adventurer, Level 5.\r\n\r\n21H 100M 83V (news) (motd) > ",
+            at: "2026-01-01T00:00:05Z")
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    row = wm.players.find { |p| p[:player] == "noir" }
+    refute row[:live], "the only recorded activity is a fixed 2026-01-01 timestamp, well outside LIVE_WINDOW_SECONDS"
+    assert_equal "Room A", row[:current_room]
+    refute_nil row[:last_status]
+    assert_equal "score", row[:last_status][:kind]
+    assert_equal "You are Noir the Great Adventurer, Level 5.", row[:last_status][:text]
+  end
+
   def test_player_summary_reports_discovered_vs_discoverable_against_the_global_map
     write_lines(File.join(@sessions_dir, "noir-s1.jsonl"), [
       event(phase: "session_start", player: "noir"),
@@ -808,6 +835,40 @@ class TestWorldMap < Minitest::Test
     assert_equal 2, summary[:rooms_discoverable], "both noir's and dina's rooms are part of the global map"
     assert_equal 1, summary[:subjects_discovered]
     assert_equal 2, summary[:subjects_discoverable]
+  end
+
+  def test_player_summary_includes_last_known_room_and_status
+    write_lines(File.join(@sessions_dir, "noir-s1.jsonl"), [
+      event(phase: "session_start", player: "noir"),
+      *move_lines(direction: "north", title: "Room A", exits: %w[s]),
+      event(phase: "tool_call", name: "tbamud__info_self", args: { "kind" => "score" }),
+      event(phase: "tool_result", name: "tbamud__info_self",
+            result: "You are Noir the Great Adventurer, Level 5.\r\n\r\n21H 100M 83V (news) (motd) > ")
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    summary = wm.player_summary("noir")
+
+    assert_equal "Room A", summary[:current_room]
+    refute_nil summary[:last_status]
+    assert_equal "score", summary[:last_status][:kind]
+    assert_equal "You are Noir the Great Adventurer, Level 5.", summary[:last_status][:text]
+  end
+
+  def test_player_summary_has_nil_room_and_status_when_neither_has_been_recorded
+    write_lines(File.join(@sessions_dir, "noir-s1.jsonl"), [
+      event(phase: "session_start", player: "noir")
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    summary = wm.player_summary("noir")
+
+    assert_nil summary[:current_room]
+    assert_nil summary[:last_status]
   end
 
   def test_migrates_an_existing_database_missing_the_player_column
@@ -1000,9 +1061,86 @@ class TestWorldMap < Minitest::Test
     wm.refresh!
 
     assert_equal(
-      { room_title: "Room A", examined: [], unexamined: [], connections: [], note: "you have not been here" },
+      { room_title: "Room A", examined: [], unexamined: [], connections: [], resources: [],
+        note: "you have not been here" },
       wm.room_knowledge(room_title: "Room A", player: "dina")
     )
+  end
+
+  # ---- resources (docs/plans/agent_loop/capability/resource_bootstrap.md §4) ----
+
+  def test_room_knowledge_surfaces_currency_and_lying_here_content_as_resources
+    write_lines(File.join(@sessions_dir, "s1.jsonl"),
+                move_lines(direction: "north", title: "Room A", exits: %w[s],
+                           contents: ["A little pile of gold coins is lying here.", "A rusty lever is here."]))
+
+    wm = build_map
+    wm.refresh!
+
+    resources = wm.room_knowledge(room_title: "Room A")[:resources]
+    assert_includes resources, "A little pile of gold coins is lying here."
+    refute_includes resources, "A rusty lever is here.", "non-resource content shouldn't be surfaced as a resource"
+  end
+
+  def test_room_knowledge_resources_is_empty_when_nothing_matches
+    write_lines(File.join(@sessions_dir, "s1.jsonl"),
+                move_lines(direction: "north", title: "Room A", exits: %w[s], contents: ["A rusty lever is here."]))
+
+    wm = build_map
+    wm.refresh!
+
+    assert_equal [], wm.room_knowledge(room_title: "Room A")[:resources]
+  end
+
+  def shop_list_lines(result:, name: "tbamud__shop", at: nil)
+    [
+      event({ phase: "tool_call", name: name, args: { "op" => "list", "args" => "" } }.merge(at ? { at: at } : {})),
+      event({ phase: "tool_result", name: name, result: result }.merge(at ? { at: at } : {}))
+    ]
+  end
+
+  def test_shop_list_result_is_persisted_and_surfaced_as_a_resource
+    write_lines(File.join(@sessions_dir, "s1.jsonl"), [
+      *move_lines(direction: "north", title: "Shop Room", exits: %w[s]),
+      *shop_list_lines(result: "1) A bread   7\r\n\r\n18H 100M 83V (news) (motd) > ")
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    resources = wm.room_knowledge(room_title: "Shop Room")[:resources]
+    assert(resources.any? { |r| r.start_with?("Shop listing:") && r.include?("A bread") })
+  end
+
+  def test_shop_list_result_is_not_persisted_for_a_non_list_shop_op
+    write_lines(File.join(@sessions_dir, "s1.jsonl"), [
+      *move_lines(direction: "north", title: "Shop Room", exits: %w[s]),
+      event(phase: "tool_call", name: "tbamud__shop", args: { "op" => "buy", "args" => "bread" }),
+      event(phase: "tool_result", name: "tbamud__shop", result: "You can't afford it!")
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    resources = wm.room_knowledge(room_title: "Shop Room")[:resources]
+    refute(resources.any? { |r| r.start_with?("Shop listing:") })
+  end
+
+  def test_shop_list_result_overwrites_a_stale_listing_for_the_same_room
+    write_lines(File.join(@sessions_dir, "s1.jsonl"), [
+      *move_lines(direction: "north", title: "Shop Room", exits: %w[s]),
+      *shop_list_lines(result: "1) A bread   7"),
+      *shop_list_lines(result: "1) A bagel   9")
+    ])
+
+    wm = build_map
+    wm.refresh!
+
+    resources = wm.room_knowledge(room_title: "Shop Room")[:resources]
+    listings = resources.select { |r| r.start_with?("Shop listing:") }
+    assert_equal 1, listings.length
+    assert_includes listings.first, "A bagel"
+    refute_includes listings.first, "A bread"
   end
 
   # ---- readonly: true (LogViz::McpServer's posture) ----
@@ -1011,7 +1149,7 @@ class TestWorldMap < Minitest::Test
     missing_db = File.join(@tmp_dir, "does-not-exist.sqlite3")
     wm = LogViz::WorldMap.new(sessions_dir: @sessions_dir, db_path: missing_db, readonly: true)
 
-    assert_equal({ room_title: "Room A", examined: [], unexamined: [], connections: [] },
+    assert_equal({ room_title: "Room A", examined: [], unexamined: [], connections: [], resources: [] },
                  wm.room_knowledge(room_title: "Room A"))
     assert_equal({ from: "Room A", to: "Room B", hops: nil, note: "no known route" },
                  wm.route_to(from: "Room A", to: "Room B"))

@@ -1249,6 +1249,14 @@ table.sessions a:hover {
   color: var(--text);
 }
 
+.player-card-status {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-family: ui-monospace, monospace;
+  margin-bottom: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
 .player-card-stats {
   display: flex;
   flex-wrap: wrap;

@@ -22,12 +22,19 @@
           <% end %>
         </div>
         <div class="player-card-room">
-          <% if p[:current_room] %>
+          <% if p[:current_room] && p[:live] %>
             currently in <strong><%= text_html(p[:current_room]) %></strong>
+          <% elsif p[:current_room] %>
+            last seen in <strong><%= text_html(p[:current_room]) %></strong>, <%= format_time(p[:last_seen_at]) %>
           <% else %>
             last seen <%= format_time(p[:last_seen_at]) %>
           <% end %>
         </div>
+        <% if p[:last_status] %>
+          <div class="player-card-status" title="checked <%= format_time(p[:last_status][:at]) %>">
+            <%= text_html(truncate(p[:last_status][:text], 80)) %>
+          </div>
+        <% end %>
         <div class="player-card-stats">
           <span><%= p[:session_count] %> session<%= "s" unless p[:session_count] == 1 %></span>
           <span><%= p[:rooms_discovered] %> room<%= "s" unless p[:rooms_discovered] == 1 %> discovered</span>

@@ -163,6 +163,38 @@ class TestApp < Minitest::Test
     assert_includes res.body, "s1"
   end
 
+  # docs/plans/observability/players/player_status.md — both the roster
+  # card and the player detail page must keep reporting the last known
+  # room/status after the session ages out of the live window, not just
+  # while a session is live.
+  def test_players_index_and_detail_show_last_known_room_and_status_once_offline
+    path = File.join(@sessions_dir, "s1.jsonl")
+    old_at = "2026-01-01T00:00:00Z"
+    File.write(path, [
+      event(phase: "session_start", provider: "anthropic", model: "claude-haiku-4-5", task: "player",
+            player: "noir", at: old_at),
+      event(phase: "turn", n: 1, at: old_at),
+      event(phase: "iteration", n: 1, at: old_at),
+      event(phase: "tool_call", name: "tbamud__look", args: {}, at: old_at),
+      event(phase: "tool_result", name: "tbamud__look", result: room_echo("The General Store", %w[s]), at: old_at),
+      event(phase: "tool_call", name: "tbamud__info_self", args: { "kind" => "score" }, at: old_at),
+      event(phase: "tool_result", name: "tbamud__info_self",
+            result: "You are Noir the Great Adventurer, Level 5.\r\n\r\n21H 100M 83V (news) (motd) > ", at: old_at)
+    ].join("\n") + "\n")
+
+    LogViz::WorldMap.instance(sessions_dir: @sessions_dir, db_path: @db_path).refresh!
+
+    index_res = @request.get("/players")
+    assert_equal 200, index_res.status
+    assert_includes index_res.body, "The General Store"
+    assert_includes index_res.body, "You are Noir the Great Adventurer, Level 5."
+
+    detail_res = @request.get("/players/noir")
+    assert_equal 200, detail_res.status
+    assert_includes detail_res.body, "The General Store"
+    assert_includes detail_res.body, "You are Noir the Great Adventurer, Level 5."
+  end
+
   def test_player_detail_404s_for_a_player_with_no_sessions
     res = @request.get("/players/nobody")
 

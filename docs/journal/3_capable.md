@@ -10,13 +10,13 @@
 ## Technical Uncertainty
 [todo]
 - I am uncertain that having a complex orchestrator and evaluator system will correlate exponentially with capability
-- I am uncertain that 
+- I am uncertain that world knowledge is enough to aid player with effectively exploring MUD and completing complex tasks
 
 ## Technical Hypothesis
 [todo]
 - Agents will struggle at first when exploration is low
 - Latency on tool call and iteration will significantly increase
-- 
+- Agents will need memory and not just world knowledge
 
 ## Technical Observations
 [todo]
@@ -81,7 +81,51 @@ A specialized sub-agent responsible for path-finding.
 - Agents are no longer wandering mindlessly. Judge kept the agent in checked and redirected the Agent to plan as well as replan if needed
 - Planner are providing a somewhat goal-decomposition and more detailed guidance
 
-### 4. Memory
+
+### 4. Self-managed session with a capped cost and user pause/unpause/stop
+Allow the Agent loop to keep going until cap hit
+- Implement interfering with pause, continue, and stop via tui
+- Enable Agents to keep going
+  - Turn stop will trigger Judge, Judge will provide a verdict and Agent loop keeps going until cap hit
+
+
+### 5. Memory
+A chronicler to summrize and learn after gaming session, log as a markdown file living under .boukensha
+- Planner will access this memory/learnt experience prior to making a plan
+- Player will only see the memory effect, not the memory itself 
+- Memory summarized after a session ends
+  > Does this align with normal play flow: player learn as they play and not after a whole session. This is also not very sufficient with agent loop design because the session keep going until goal is accomplished
+
+**Tasked with leveling up to 20**
+- Agents fought mobs, died and managed to log back to game to continue with the plan       
+- Judge flagged a possible problem with the session and asked for user to review, turned out Player didn't follow Navigator's path-finding instructions
+- Memory summarized into 4 categories: discoveries, mistakes, strategies and open threads
+- When memory is low Player tend to try and fail multiple times, feeding experience to memory
+  > Changed memory machenics to flush after a turn ends, not when session ends, aliging with: 'when I get stuck I need to joggle my experience and thinking to find a another/better solution'
+- Found out that consult_navigator tool result got compacted in message, Player is missing most of the hop-by-hop instruction
+- Overflowing context in a session because we never compact or clear message after a Judge's verdict
+- Agents really struggled to resolve hunger
+
+**Implemented a new Context#route, same as Context#plan to survive compactation**
+- Add numbered route ouput from Navigator
+- Add a Context#route that carries route and follow-it instruction => only cost token when a route is active
+
+**Bug: memory wasn't updating on long, never-escalating sessions**
+- Observed: a broke Player kept visiting bars, pet shops, and food shops that never resolve hunger since it can't afford anything — a clearly learnable mistake — but nothing landed in memory that session
+  > FIXED: - Chronicler now runs once per checkpoint instead of only on :replan/:flag — watch real session cost/latency and digest quality now that it fires more often
+
+- Agents could easily resolve thirst but couldn't resolve hunger. Assuming Agents has to accomplish this at least once to learn ways to resolve hunger but got blocked by the self-imposed combat ban (don't fight when low HP or hungry)
+
+**Prompt Engineering**
+- Reduced the self-imposed ban. Provided more generic instructions
+- Made Chronicler to check outcomes before making something a strategy
+
+**Observations**
+- Agents manage to learn and grow with the game:
+  - Learn how to kill a monster
+  - Learn that it can loot free resource from monster
+  - Learn that it made a mistakes repeating failed commands instead of pivoting (was calling examine/consider instead of attacking)
+  - Decide to fight the fido but somehows fighting with Peacekeeper instead and not the inteded target => die
 
 
 ### 

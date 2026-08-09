@@ -62,6 +62,15 @@ module LogViz
     # `RoomEcho.location_tool?` instead). See #handle_tool_result.
     EXAMINE_VERBS = %w[examine look].freeze
 
+    # Marks a `room_contents` line as resource-ish for #resources_in —
+    # docs/plans/agent_loop/capability/resource_bootstrap.md §4. Currency
+    # mentions and CircleMUD's stock "lying here"/"is here" free-loot
+    # phrasing; deliberately a cheap pattern match over already-captured
+    # text, not a new extraction pipeline (this stays the same "passive
+    # record of what's already been discovered" posture as the rest of
+    # #room_knowledge).
+    RESOURCE_PATTERN = /\b(?:gold|coins?|copper|silver|platinum)\b|lying here/i.freeze
+
     # Minimum time a `source: "fallback"` content_fact must sit before
     # `next_unclassified_content` will offer it for retry again. Without
     # this, a persistently-failing row (Ollama still down, or one
@@ -259,6 +268,19 @@ module LogViz
         room_title TEXT PRIMARY KEY,
         source TEXT,
         scanned_at TEXT
+      );
+
+      -- Latest `shop(op: list)` result seen in this room — resource_bootstrap
+      -- .md §4's "shop list survives a compaction/replan instead of needing
+      -- to be rediscovered." One row per room, overwritten on every fresh
+      -- `shop list` (a shop's stock/prices can change; this is a cache of
+      -- the most recent read, same staleness posture room_knowledge already
+      -- has for room layout).
+      CREATE TABLE IF NOT EXISTS shop_listings (
+        room_title TEXT PRIMARY KEY,
+        listing_text TEXT,
+        session_id TEXT,
+        at TEXT
       );
     SQL
 
@@ -525,10 +547,11 @@ module LogViz
     end
 
     # One row per distinct tagged player — session count, total turns/
-    # iterations across every session, first/last-seen timestamps, and
-    # whether any of their sessions is currently live (same LIVE_WINDOW_
-    # SECONDS heuristic /map already uses) with its current room. Backs
-    # the /players index page.
+    # iterations across every session, first/last-seen timestamps, whether
+    # any of their sessions is currently live (same LIVE_WINDOW_SECONDS
+    # heuristic /map already uses), and their last known room/status (see
+    # #last_known_room/#last_status below — these survive every session
+    # going offline, unlike `live`). Backs the /players index page.
     def players
       live_by_player = live_sessions.each_with_object({}) { |s, h| h[s[:player]] ||= s }
 
@@ -537,14 +560,42 @@ module LogViz
         "FROM sessions WHERE player IS NOT NULL AND player != '' GROUP BY player " \
         "ORDER BY MAX(last_seen_at) DESC"
       ).map do |player, session_count, turns, iterations, first_seen, last_seen|
-        live = live_by_player[player]
         {
           player: player, session_count: session_count.to_i,
           total_turns: turns.to_i, total_iterations: iterations.to_i,
           first_seen_at: first_seen, last_seen_at: last_seen,
-          live: !live.nil?, current_room: live && live[:last_room]
+          live: !live_by_player[player].nil?,
+          current_room: last_known_room(player),
+          last_status: last_status(player)
         }
       end
+    end
+
+    # `player`'s last known room across every one of their sessions, live
+    # or not — the players roster used to only ever report a room while a
+    # session was inside the LIVE_WINDOW_SECONDS heuristic, so a player's
+    # location vanished from log_viz the moment their session went offline
+    # (see docs/plans/observability/players/player_status.md).
+    def last_known_room(player)
+      @db.get_first_value(
+        "SELECT last_room FROM sessions WHERE player = ? AND last_room IS NOT NULL " \
+        "ORDER BY last_seen_at DESC LIMIT 1", [player]
+      )
+    end
+
+    # `player`'s most recent info_self snapshot of `kind` ("score" by
+    # default — the tbamud__info_self kind that carries HP/level/etc, see
+    # SelfState) across every one of their sessions, so the Player page can
+    # show "last checked status" persistently instead of only while a
+    # session is live.
+    def last_status(player, kind: "score")
+      row = @db.get_first_row(
+        "SELECT self_state.text, self_state.at FROM self_state " \
+        "JOIN sessions ON sessions.session_id = self_state.session_id " \
+        "WHERE sessions.player = ? AND self_state.kind = ? " \
+        "ORDER BY self_state.at DESC LIMIT 1", [player, kind]
+      )
+      row && { kind: kind, text: row[0], at: row[1] }
     end
 
     # This player's own session list plus the "discovered vs. discoverable"
@@ -564,7 +615,9 @@ module LogViz
         rooms_discovered: visited_rooms.length,
         rooms_discoverable: rooms.length,
         subjects_discovered: subjects_in_rooms(visited_rooms).length,
-        subjects_discoverable: all_subjects.length
+        subjects_discoverable: all_subjects.length,
+        current_room: last_known_room(name),
+        last_status: last_status(name)
       }
     end
 
@@ -701,13 +754,15 @@ module LogViz
     # former Boukensha::WorldKnowledge#room_knowledge (which duplicated
     # log_viz's own EXAMINED_EXISTS_SQL/EXAMINATION_RESULT_SQL — collapsed
     # here instead of moved sideways) plus `connections` from
-    # #connections_for:
+    # #connections_for and `resources` from #resources_in (resource_bootstrap
+    # .md §4):
     #
     #   room_knowledge(room_title:, player: "Alice") ->
     #     { room_title:, examined: [{ subject:, result: }, ...],
-    #       unexamined: [...subjects], connections: [{direction:, to:, via:}, ...] }
+    #       unexamined: [...subjects], connections: [{direction:, to:, via:}, ...],
+    #       resources: [...already-logged resource-ish strings] }
     #     # or, if `player` has never visited this room:
-    #     { room_title:, examined: [], unexamined: [], connections: [],
+    #     { room_title:, examined: [], unexamined: [], connections: [], resources: [],
     #       note: "you have not been here" }
     #
     # `player: nil` is the historical, un-scoped, whole-map-visible
@@ -715,9 +770,14 @@ module LogViz
     # per-player tracking existed). A non-nil player is scoped two ways —
     # see multiple_concurrent_players.md §2: (1) a room that player's own
     # sessions have never visited answers "you have not been here" (and,
-    # deliberately, no `connections` either — a room's exits are something
-    # you only know by having stood in it); (2) within a visited room,
-    # "examined" only counts examinations from that player's own sessions.
+    # deliberately, no `connections`/`resources` either — a room's contents
+    # are something you only know by having stood in it); (2) within a
+    # visited room, "examined" only counts examinations from that player's
+    # own sessions. `resources` itself is not further player-scoped beyond
+    # that visited gate — same posture `connections` already has: once
+    # you've stood in the room, its already-logged contents/shop listing
+    # are yours to see, regardless of which of your own sessions logged
+    # them first.
     #
     # Never raises: see #route_to's comment — same contract.
     def room_knowledge(room_title:, player: nil)
@@ -731,7 +791,8 @@ module LogViz
         room_title: room_title,
         examined: examined_subjects_for(room_title, player),
         unexamined: subjects_in_room(room_title, examined: false, player: player),
-        connections: connections_for(room_title)
+        connections: connections_for(room_title),
+        resources: resources_in(room_title)
       }
     rescue SQLite3::Exception => e
       warn "[LogViz::WorldMap] room_knowledge query failed: #{e.message}"
@@ -839,7 +900,26 @@ module LogViz
     end
 
     def empty_room_knowledge(room_title)
-      { room_title: room_title, examined: [], unexamined: [], connections: [] }
+      { room_title: room_title, examined: [], unexamined: [], connections: [], resources: [] }
+    end
+
+    # Already-logged room_contents lines matching RESOURCE_PATTERN, plus the
+    # most recent `shop(op: list)` listing seen in this room (if any) —
+    # resource_bootstrap.md §4. Both are things the pipeline already
+    # captured (room_contents/shop_listings), just never resurfaced as
+    # "here's a known resource you haven't used." Not player-scoped (see
+    # #room_knowledge's comment) and not a live scan — a resource since
+    # picked up, or a shop whose prices changed, still reports stale data,
+    # the same staleness #room_knowledge already accepts for room layout.
+    def resources_in(room_title)
+      contents = @db.execute(
+        "SELECT content FROM room_contents WHERE room_title = ? ORDER BY content", [room_title]
+      ).map { |r| r[0] }.select { |c| c =~ RESOURCE_PATTERN }
+
+      listing = @db.get_first_value("SELECT listing_text FROM shop_listings WHERE room_title = ?", [room_title])
+      contents << "Shop listing: #{listing}" if listing
+
+      contents
     end
 
     # Shared by #connections_for and #route_to's adjacency so a `route_to`
@@ -1293,7 +1373,19 @@ module LogViz
       elsif SelfState.info_self?(name)
         kind = call[:args] && (call[:args]["kind"] || call[:args][:kind])
         record_self_state(session_id, kind, event, turn, iteration) if kind
+      elsif shop_list_call?(name, call[:args])
+        record_shop_listing(session_id, event)
       end
+    end
+
+    # `shop(op: "list")` — the one shop op whose result is a room-scoped
+    # price list worth caching (resource_bootstrap.md §4), as opposed to
+    # buy/sell/value/offer, which are one-off transactions with nothing
+    # durable to persist.
+    def shop_list_call?(name, args)
+      return false unless args
+
+      name.to_s.split("__").last == "shop" && (args["op"] || args[:op]).to_s == "list"
     end
 
     def examine_target(args)
@@ -1330,6 +1422,25 @@ module LogViz
         "INSERT OR IGNORE INTO examinations(room_title, subject, session_id, turn, iteration, at, result_text) " \
         "VALUES (?,?,?,?,?,?,?)",
         [room_title, target.downcase, session_id, turn, iteration, event["at"], RoomEcho.clean_reply(event["result"])]
+      )
+    end
+
+    # Persists the room-scoped `shop(op: list)` result the same way
+    # #record_examination persists an examine result — keyed to the
+    # player's current room (`sessions.last_room`), so "I already know this
+    # shop's prices" survives a compaction/replan instead of needing
+    # `shop list` called again. No-op if the current room isn't known yet.
+    # UPSERT, not INSERT OR IGNORE — a shop's stock/prices can change, and a
+    # fresh `shop list` should always supersede a stale cached one.
+    def record_shop_listing(session_id, event)
+      room_title = @db.get_first_value("SELECT last_room FROM sessions WHERE session_id = ?", [session_id])
+      return unless room_title
+
+      @db.execute(
+        "INSERT INTO shop_listings(room_title, listing_text, session_id, at) VALUES (?, ?, ?, ?) " \
+        "ON CONFLICT(room_title) DO UPDATE SET " \
+        "listing_text = excluded.listing_text, session_id = excluded.session_id, at = excluded.at",
+        [room_title, RoomEcho.clean_reply(event["result"]), session_id, event["at"]]
       )
     end
 

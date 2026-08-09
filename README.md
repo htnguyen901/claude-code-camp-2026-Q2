@@ -32,9 +32,7 @@ gem build boukensha.gemspec
 gem install ./boukensha-*.gem
 ```
 
-`~/.boukensharc` must point `boukensha_path` at this step's directory (see
-`week3_capable/ruby/20_navigator/lib/boukensha_loader.rb`'s header comment
-for the full resolution order):
+`~/.boukensharc` must point `boukensha_path` at the final step's directory 
 
 ```yaml
 # ~/.boukensharc

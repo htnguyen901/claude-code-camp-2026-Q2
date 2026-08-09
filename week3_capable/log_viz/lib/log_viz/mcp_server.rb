@@ -28,8 +28,12 @@ module LogViz
                           "text the room printed back, reuse that as a remembered clue " \
                           "instead of spending a turn re-examining it — plus its exits, each " \
                           "resolved to the room it leads to if you've ever walked it (or " \
-                          "`null` if it's a listed exit you've never actually taken). This is " \
-                          "a passive record of your own past exploration, not a live scan.",
+                          "`null` if it's a listed exit you've never actually taken), plus " \
+                          "`resources`: already-logged resource-ish contents of the room " \
+                          "(currency/loot mentions, a cached shop price list from a past " \
+                          "`shop list` call there) — worth checking before assuming you have " \
+                          "no way to get gold/items here. This is a passive record of your " \
+                          "own past exploration, not a live scan.",
         "inputSchema" => {
           "type" => "object",
           "properties" => {
